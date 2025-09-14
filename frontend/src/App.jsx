@@ -558,13 +558,13 @@ export default function ComplianceApp() {
                     Error: {analyticsData.error}
                   </div>
                 ) : trendData.length > 0 ? (
-                  <>
+                  <div>
                     {analyticsData.error && (
                       <div className="text-xs text-yellow-600 p-2 bg-yellow-50 rounded mb-2">
                         Using local data (API error: {analyticsData.error})
                       </div>
                     )}
-                  <ResponsiveContainer width="100%" height={200}>
+                    <ResponsiveContainer width="100%" height={200}>
                     <LineChart data={trendData}>
                       <XAxis 
                         dataKey="x" 
@@ -602,8 +602,8 @@ export default function ComplianceApp() {
                         activeDot={{ r: 6, stroke: '#2563eb', strokeWidth: 2, fill: '#fff' }}
                       />
                     </LineChart>
-                  </ResponsiveContainer>
-                  </>
+                    </ResponsiveContainer>
+                  </div>
                 ) : (
                   <div className="text-sm text-gray-600">
                     {analyticsData.loading ? 'Loading trend data...' : 'No compliance data yet.'}
