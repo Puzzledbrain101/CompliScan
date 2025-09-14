@@ -19,6 +19,15 @@ export default function ComplianceApp() {
   });
   const [selectedSubmission, setSelectedSubmission] = useState(null);
   const fileInputRef = useRef();
+  
+  // Analytics state
+  const [analyticsData, setAnalyticsData] = useState({
+    brands: [],
+    trend: [],
+    stats: {},
+    loading: false,
+    error: null
+  });
 
   // Save submissions to localStorage whenever logs change
   React.useEffect(() => {
@@ -28,6 +37,51 @@ export default function ComplianceApp() {
       console.warn('Failed to save submissions:', error);
     }
   }, [logs]);
+
+  // Analytics API functions
+  async function fetchAnalytics() {
+    setAnalyticsData(prev => ({ ...prev, loading: true, error: null }));
+    
+    try {
+      const [brandsRes, trendRes, statsRes] = await Promise.all([
+        fetch('/api/analytics/brands'),
+        fetch('/api/analytics/trend'),
+        fetch('/api/analytics/stats')
+      ]);
+
+      if (!brandsRes.ok || !trendRes.ok || !statsRes.ok) {
+        throw new Error('Failed to fetch analytics data');
+      }
+
+      const [brands, trend, stats] = await Promise.all([
+        brandsRes.json(),
+        trendRes.json(),
+        statsRes.json()
+      ]);
+
+      setAnalyticsData({
+        brands,
+        trend,
+        stats,
+        loading: false,
+        error: null
+      });
+    } catch (error) {
+      console.error('Failed to fetch analytics:', error);
+      setAnalyticsData(prev => ({
+        ...prev,
+        loading: false,
+        error: error.message
+      }));
+    }
+  }
+
+  // Load analytics when switching to backend view
+  React.useEffect(() => {
+    if (view === 'backend') {
+      fetchAnalytics();
+    }
+  }, [view]);
 
   // Mock rule engine run on parsed fields
   function runRuleEngine(parsed) {
@@ -144,9 +198,14 @@ export default function ComplianceApp() {
     if (fileInputRef.current) fileInputRef.current.value = null;
   }
 
-  // Small analytics
-  const trendData = logs.slice(0, 12).reverse().map((l, i) => ({ x: i + 1, compliance: l.compliance_score }));
-  const brandViolations = [{ brand: 'DemoLabs', violations: logs.filter(l => l.parsed?.manufacturer?.toLowerCase()?.includes('demolabs')).length }, { brand: 'SkinCo Labs', violations: logs.filter(l => l.parsed?.manufacturer?.toLowerCase()?.includes('skinco')).length }];
+  // Analytics data - use real backend data when available, fallback to local logs
+  const trendData = analyticsData.trend.length > 0 
+    ? analyticsData.trend 
+    : logs.slice(0, 12).reverse().map((l, i) => ({ x: i + 1, compliance: l.compliance_score }));
+    
+  const brandViolations = analyticsData.brands.length > 0 
+    ? analyticsData.brands
+    : [{ brand: 'DemoLabs', violations: logs.filter(l => l.parsed?.manufacturer?.toLowerCase()?.includes('demolabs')).length }, { brand: 'SkinCo Labs', violations: logs.filter(l => l.parsed?.manufacturer?.toLowerCase()?.includes('skinco')).length }];
 
   return (
     <div className="min-h-screen bg-gray-50 p-6">
@@ -502,19 +561,33 @@ export default function ComplianceApp() {
               </div>
 
               <div className="bg-white p-4 rounded shadow">
-                <h3 className="font-semibold mb-3">Violations by Brand</h3>
-                {brandViolations.some(b => b.violations > 0) ? (
+                <h3 className="font-semibold mb-3 flex items-center justify-between">
+                  Violations by Brand
+                  {analyticsData.loading && (
+                    <div className="text-xs text-blue-500 flex items-center">
+                      <div className="w-3 h-3 border border-blue-500 border-t-transparent rounded-full animate-spin mr-2"></div>
+                      Loading...
+                    </div>
+                  )}
+                </h3>
+                {analyticsData.error ? (
+                  <div className="text-sm text-red-600 p-2 bg-red-50 rounded">
+                    Error: {analyticsData.error}
+                  </div>
+                ) : brandViolations.length > 0 && brandViolations.some(b => b.violations > 0) ? (
                   <ResponsiveContainer width="100%" height={200}>
                     <BarChart data={brandViolations}>
                       <XAxis dataKey="brand" />
                       <YAxis />
-                      <Tooltip />
+                      <Tooltip formatter={(value, name) => [value, name === 'violations' ? 'Violations' : name]} />
                       <CartesianGrid strokeDasharray="3 3" />
                       <Bar dataKey="violations" fill="#ef4444" />
                     </BarChart>
                   </ResponsiveContainer>
                 ) : (
-                  <div className="text-sm text-gray-600">No violations yet.</div>
+                  <div className="text-sm text-gray-600">
+                    {analyticsData.loading ? 'Loading violations data...' : 'No violations yet.'}
+                  </div>
                 )}
               </div>
             </div>
