@@ -118,10 +118,38 @@ export default function ComplianceApp() {
   return (
     <div className="min-h-screen bg-gray-50 p-6">
       <header className="max-w-6xl mx-auto mb-6 flex items-center justify-between">
-        <h1 className="text-2xl font-bold">Product Compliance — Demo</h1>
+        <div className="flex items-center space-x-4">
+          <div className="w-12 h-12 bg-gradient-to-br from-emerald-400 to-blue-500 rounded-xl flex items-center justify-center shadow-lg">
+            <span className="text-white font-bold text-xl">📊</span>
+          </div>
+          <div>
+            <h1 className="text-2xl font-bold bg-gradient-to-r from-emerald-300 to-blue-300 bg-clip-text text-transparent">
+              CompliScan
+            </h1>
+            <p className="text-white/70 text-sm">Legal Metrology Compliance Checker</p>
+          </div>
+        </div>
         <div className="space-x-2">
-          <button onClick={() => setView('seller')} className={`px-4 py-2 rounded ${view==='seller'?'bg-blue-600 text-white':'bg-white border'}`}>Seller View</button>
-          <button onClick={() => setView('backend')} className={`px-4 py-2 rounded ${view==='backend'?'bg-blue-600 text-white':'bg-white border'}`}>Compliance Panel</button>
+          <button 
+            onClick={() => setView('seller')} 
+            className={`px-4 py-2 rounded-xl transition-all duration-300 transform hover:scale-105 ${
+              view==='seller' 
+                ? 'bg-gradient-to-r from-emerald-500 to-blue-500 text-white shadow-lg' 
+                : 'bg-white/20 backdrop-blur-sm border border-white/30 text-white hover:bg-white/30'
+            }`}
+          >
+            🏪 Seller View
+          </button>
+          <button 
+            onClick={() => setView('backend')} 
+            className={`px-4 py-2 rounded-xl transition-all duration-300 transform hover:scale-105 ${
+              view==='backend' 
+                ? 'bg-gradient-to-r from-emerald-500 to-blue-500 text-white shadow-lg' 
+                : 'bg-white/20 backdrop-blur-sm border border-white/30 text-white hover:bg-white/30'
+            }`}
+          >
+            📈 Analytics
+          </button>
         </div>
       </header>
 
@@ -129,24 +157,28 @@ export default function ComplianceApp() {
         {/* Left column: form or filters */}
         <section className="col-span-1 md:col-span-1">
           {view === 'seller' ? (
-            <div className="bg-white rounded-xl shadow-lg p-6">
-              <div className="bg-gradient-to-r from-blue-50 to-purple-50 p-4 rounded-lg mb-6 border border-blue-100">
-                <h2 className="text-lg font-semibold text-gray-800 mb-2">📊 Compliance Checker</h2>
+            <div className="bg-white rounded-xl shadow-lg p-6 transition-all duration-500 hover:shadow-2xl hover:scale-[1.02]">
+              <div className="bg-gradient-to-r from-emerald-50 to-blue-50 p-4 rounded-lg mb-6 border border-emerald-100">
+                <h2 className="text-lg font-semibold text-gray-800 mb-2 flex items-center">
+                  <span className="mr-2">🔍</span>
+                  CompliScan Checker
+                </h2>
                 <p className="text-sm text-gray-600">
-                  Verify Legal Metrology requirements for your products. Upload images or paste URLs from any shopping site.
+                  Instantly verify all 6 mandatory Legal Metrology requirements. Upload product images or paste URLs from any e-commerce platform.
                 </p>
               </div>
 
               <form onSubmit={handleSubmit} className="space-y-6">
-                <div className="bg-gray-50 p-4 rounded-lg border-2 border-dashed border-gray-200 hover:border-purple-300 transition-colors">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    📷 Product Image
+                <div className="bg-gray-50 p-4 rounded-lg border-2 border-dashed border-gray-200 hover:border-emerald-300 transition-all duration-300 hover:bg-emerald-50">
+                  <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
+                    <span className="mr-2">📷</span>
+                    Product Image
                   </label>
                   <input
                     ref={fileInputRef}
                     type="file"
                     accept="image/*"
-                    className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-purple-50 file:text-purple-700 hover:file:bg-purple-100"
+                    className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-emerald-50 file:text-emerald-700 hover:file:bg-emerald-100 transition-all duration-200"
                   />
                   <p className="text-xs text-gray-500 mt-1">JPG, PNG, GIF, WebP (max 10MB)</p>
                 </div>
@@ -162,15 +194,16 @@ export default function ComplianceApp() {
                   </div>
                 </div>
 
-                <div className="bg-gray-50 p-4 rounded-lg border-2 border-dashed border-gray-200 hover:border-purple-300 transition-colors">
-                  <label className="block text-sm font-medium text-gray-700 mb-2">
-                    🔗 Product URL
+                <div className="bg-gray-50 p-4 rounded-lg border-2 border-dashed border-gray-200 hover:border-emerald-300 transition-all duration-300 hover:bg-emerald-50">
+                  <label className="block text-sm font-medium text-gray-700 mb-2 flex items-center">
+                    <span className="mr-2">🔗</span>
+                    Product URL
                   </label>
                   <input
                     name="url"
                     type="text"
                     placeholder="https://amazon.in | flipkart.com | myntra.com"
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm"
+                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-emerald-500 focus:border-transparent text-sm transition-all duration-200"
                   />
                   <p className="text-xs text-gray-500 mt-1">Any e-commerce website URL</p>
                 </div>
@@ -179,15 +212,15 @@ export default function ComplianceApp() {
                   <button
                     type="submit"
                     disabled={submitting}
-                    className="flex-1 bg-gradient-to-r from-purple-600 to-blue-600 text-white py-3 px-4 rounded-lg font-medium hover:from-purple-700 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-200 transform hover:scale-105"
+                    className="flex-1 bg-gradient-to-r from-emerald-600 to-blue-600 text-white py-3 px-4 rounded-lg font-medium hover:from-emerald-700 hover:to-blue-700 disabled:opacity-50 disabled:cursor-not-allowed transition-all duration-300 transform hover:scale-105 hover:shadow-lg"
                   >
                     {submitting ? (
                       <div className="flex items-center justify-center">
                         <div className="animate-spin rounded-full h-4 w-4 border-b-2 border-white mr-2"></div>
-                        Checking...
+                        <span className="animate-pulse">Analyzing with AI...</span>
                       </div>
                     ) : (
-                      '✨ Check'
+                      '🚀 Scan Now'
                     )}
                   </button>
                   <button
@@ -196,7 +229,7 @@ export default function ComplianceApp() {
                       if (fileInputRef.current) fileInputRef.current.value = null; 
                       setResult(null);
                     }}
-                    className="px-4 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-colors"
+                    className="px-4 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-all duration-200 transform hover:scale-105"
                   >
                     Clear
                   </button>
@@ -245,34 +278,39 @@ export default function ComplianceApp() {
               {result ? (
                 <>
                   {/* Status Header */}
-                  <div className="bg-white rounded-xl shadow-lg p-6 border-l-4 border-purple-500">
+                  <div className="bg-white rounded-xl shadow-lg p-6 border-l-4 border-emerald-500 animate-fadeIn">
                     <div className="flex items-center justify-between mb-4">
                       <div className="flex items-center space-x-3">
-                        <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white text-xl font-bold ${
-                          result.status === 'approved' ? 'bg-green-500' : 
-                          result.status === 'failed' ? 'bg-yellow-500' : 'bg-red-500'
+                        <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white text-xl font-bold transition-all duration-500 transform hover:scale-110 ${
+                          result.status === 'approved' ? 'bg-gradient-to-br from-emerald-500 to-green-600' : 
+                          result.status === 'failed' ? 'bg-gradient-to-br from-yellow-500 to-orange-600' : 'bg-gradient-to-br from-red-500 to-pink-600'
                         }`}>
                           {result.status === 'approved' ? '✓' : result.status === 'failed' ? '⚠' : '✗'}
                         </div>
                         <div>
-                          <h3 className="text-xl font-bold text-gray-800">
-                            {result.status === 'approved' ? 'Compliant' : 
-                             result.status === 'failed' ? 'Needs Review' : 'Non-Compliant'}
+                          <h3 className="text-xl font-bold text-gray-800 animate-slideIn">
+                            {result.status === 'approved' ? '✅ Fully Compliant' : 
+                             result.status === 'failed' ? '⚠️ Needs Review' : '❌ Non-Compliant'}
                           </h3>
-                          <p className="text-gray-600">Compliance Score: {result.compliance_score}%</p>
+                          <p className="text-gray-600">CompliScan Score: {result.compliance_score}%</p>
                         </div>
                       </div>
                       <div className="text-right">
-                        <div className="text-3xl font-bold text-purple-600">{result.compliance_score}%</div>
+                        <div className="text-3xl font-bold bg-gradient-to-r from-emerald-600 to-blue-600 bg-clip-text text-transparent animate-pulse">
+                          {result.compliance_score}%
+                        </div>
                         <div className="text-sm text-gray-500">Legal Metrology</div>
                       </div>
                     </div>
                   </div>
 
                   {/* Product Information Card */}
-                  <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-                    <div className="bg-gradient-to-r from-blue-50 to-purple-50 px-6 py-4 border-b">
-                      <h4 className="text-lg font-semibold text-gray-800">📦 Product Information</h4>
+                  <div className="bg-white rounded-xl shadow-lg overflow-hidden animate-slideUp">
+                    <div className="bg-gradient-to-r from-emerald-50 to-blue-50 px-6 py-4 border-b">
+                      <h4 className="text-lg font-semibold text-gray-800 flex items-center">
+                        <span className="mr-2">📦</span>
+                        Legal Metrology Fields
+                      </h4>
                     </div>
                     <div className="p-6">
                       <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
@@ -314,9 +352,12 @@ export default function ComplianceApp() {
 
                   {/* Violations & Issues */}
                   {(result.violations?.length > 0 || result.reasons?.length > 0) && (
-                    <div className="bg-white rounded-xl shadow-lg overflow-hidden">
-                      <div className="bg-red-50 px-6 py-4 border-b border-red-100">
-                        <h4 className="text-lg font-semibold text-red-800">⚠️ Issues Found</h4>
+                    <div className="bg-white rounded-xl shadow-lg overflow-hidden animate-bounceIn">
+                      <div className="bg-gradient-to-r from-red-50 to-pink-50 px-6 py-4 border-b border-red-100">
+                        <h4 className="text-lg font-semibold text-red-800 flex items-center">
+                          <span className="mr-2 animate-pulse">⚠️</span>
+                          CompliScan Issues Detected
+                        </h4>
                       </div>
                       <div className="p-6 space-y-4">
                         {result.violations?.length > 0 && (
@@ -380,12 +421,12 @@ export default function ComplianceApp() {
                   </div>
                 </>
               ) : (
-                <div className="bg-white rounded-xl shadow-lg p-12 text-center">
-                  <div className="w-24 h-24 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-4">
-                    <span className="text-gray-400 text-3xl">📊</span>
+                <div className="bg-white rounded-xl shadow-lg p-12 text-center animate-fadeIn">
+                  <div className="w-24 h-24 bg-gradient-to-br from-emerald-100 to-blue-100 rounded-full flex items-center justify-center mx-auto mb-4 transition-all duration-300 hover:scale-110">
+                    <span className="text-emerald-500 text-3xl animate-bounce">🔍</span>
                   </div>
-                  <h3 className="text-xl font-semibold text-gray-800 mb-2">Ready to Check Compliance</h3>
-                  <p className="text-gray-600">Upload a product image or paste an e-commerce URL to start the compliance analysis.</p>
+                  <h3 className="text-xl font-semibold text-gray-800 mb-2">Ready to Scan with CompliScan</h3>
+                  <p className="text-gray-600">Upload a product image or paste an e-commerce URL to instantly verify all 6 mandatory Legal Metrology requirements.</p>
                 </div>
               )}
             </div>
