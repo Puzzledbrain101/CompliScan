@@ -13,8 +13,9 @@ const dns = require('dns').promises;
 const fs = require('fs').promises;
 const path = require('path');
 
-// Import OCR processor
+// Import OCR processor and schema
 const { processLabelImage } = require('./ocr-processor');
+const { createNormalizedLabel, validateLabel } = require('./schema');
 
 // Initialize OpenAI client (optional - only if API key provided)
 // the newest OpenAI model is "gpt-5" which was released August 7, 2025. do not change this unless explicitly requested by the user
@@ -825,32 +826,48 @@ app.post('/api/check',
         reasons.push('Low image resolution');
       }
 
-      const score = Math.max(0, Math.round((1 - violations.length / required.length - (reasons.length * 0.05)) * 100));
-      const status = violations.length === 0 && reasons.length === 0 ? 'approved' : 
-                    (reasons.length > 0 && violations.length === 0 ? 'rejected' : 'failed');
+      // Create normalized label using schema
+      const normalizedLabel = createNormalizedLabel(parsed, {
+        source: isImageSource ? 'image' : 'url',
+        fieldConfidences: parsed._field_confidences || {},
+        ocrConfidence: parsed._ocr_confidence || 0,
+        imageResolution: parsed._image_resolution,
+        extractedText: parsed._extracted_text,
+        debugInfo: { 
+          inputType: imageFile ? 'image' : 'url',
+          url: url || 'N/A',
+          fileName: imageFile?.originalname || 'N/A'
+        }
+      });
 
-      // Sanitize the parsed data before sending response (all 6 mandatory fields)
-      const sanitizedParsed = {
-        product_name: parsed.product_name?.substring(0, 200) || null,
-        MRP: parsed.MRP?.substring(0, 50) || null,
-        net_quantity: parsed.net_quantity?.substring(0, 50) || null,
-        manufacturer: parsed.manufacturer?.substring(0, 100) || null,
-        country_of_origin: parsed.country_of_origin?.substring(0, 100) || null,
-        consumer_care: parsed.consumer_care?.substring(0, 150) || null,
-        date_of_manufacture: parsed.date_of_manufacture?.substring(0, 50) || null,
-        _ocr_confidence: parsed._ocr_confidence || 0,
-        _image_resolution: parsed._image_resolution,
-        _field_confidences: parsed._field_confidences
-      };
+      // Validate normalized label structure
+      const validation = validateLabel(normalizedLabel);
+      if (!validation.valid && process.env.NODE_ENV !== 'production') {
+        console.warn('Schema validation errors:', validation.errors);
+      }
 
+      // Add legacy compatibility fields for frontend
       const log = {
         id: `check_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        parsed: sanitizedParsed,
-        compliance_score: score,
-        status,
-        violations,
-        reasons,
-        timestamp: new Date().toISOString()
+        parsed: {
+          product_name: normalizedLabel.product_name,
+          MRP: normalizedLabel.MRP,
+          manufacturer: normalizedLabel.manufacturer,
+          net_quantity: normalizedLabel.net_quantity,
+          country_of_origin: normalizedLabel.country_of_origin,
+          consumer_care: normalizedLabel.consumer_care,
+          date_of_manufacture: normalizedLabel.date_of_manufacture,
+          _ocr_confidence: normalizedLabel._ocr_confidence,
+          _image_resolution: normalizedLabel._image_resolution,
+          _field_confidences: normalizedLabel._field_confidences
+        },
+        compliance_score: normalizedLabel.compliance_score,
+        status: normalizedLabel.status,
+        violations: normalizedLabel.violations.map(v => v.message),
+        reasons: reasons, // Keep quality reasons separate
+        timestamp: normalizedLabel._timestamp,
+        // Include full normalized data for future use
+        _normalized: normalizedLabel
       };
 
       // Clean up uploaded file
