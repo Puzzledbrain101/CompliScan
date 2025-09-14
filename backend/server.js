@@ -13,6 +13,9 @@ const dns = require('dns').promises;
 const fs = require('fs').promises;
 const path = require('path');
 
+// Import OCR processor
+const { processLabelImage } = require('./ocr-processor');
+
 // Initialize OpenAI client (optional - only if API key provided)
 // the newest OpenAI model is "gpt-5" which was released August 7, 2025. do not change this unless explicitly requested by the user
 const OpenAI = require('openai');
@@ -677,25 +680,49 @@ app.post('/api/check',
           throw new Error('Invalid file type');
         }
 
-        // In production: run Tesseract or Google Vision on imageFile.path
-        // For demo we return a mocked parsed object
-        parsed = {
-          product_name: 'Demo from image',
-          MRP: '₹199',
-          net_quantity: '100g',
-          manufacturer: 'Demo Manufacturer',
-          country_of_origin: 'India',
-          _ocr_confidence: 0.9,
-          _image_resolution: { width: 1200, height: 900 }
-        };
+        // Process image with real OCR
+        console.log('Processing image with OCR:', imageFile.originalname);
+        parsed = await processLabelImage(imageFile.path);
       }
 
-      // Enhanced rule engine with better validation
-      const required = ['product_name','MRP','manufacturer','net_quantity','country_of_origin'];
+      // Rule engine with different requirements for URL vs Image processing
+      const isImageSource = parsed._ocr_source === 'image';
+      
+      // All 6 mandatory Legal Metrology fields for images, basic fields for URLs
+      const requiredForImages = [
+        'product_name',
+        'MRP', 
+        'manufacturer',
+        'net_quantity',
+        'country_of_origin',
+        'consumer_care',
+        'date_of_manufacture'
+      ];
+      
+      const requiredForUrls = [
+        'product_name',
+        'MRP', 
+        'manufacturer',
+        'net_quantity',
+        'country_of_origin'
+      ];
+      
+      const required = isImageSource ? requiredForImages : requiredForUrls;
       const violations = [];
+      
+      const fieldNames = {
+        'product_name': 'Product Name',
+        'MRP': 'MRP (Retail Sale Price)',
+        'manufacturer': 'Manufacturer/Packer/Importer Name & Address',
+        'net_quantity': 'Net Quantity',
+        'country_of_origin': 'Country of Origin',
+        'consumer_care': 'Consumer Care Details',
+        'date_of_manufacture': 'Date of Manufacture/Import'
+      };
+      
       required.forEach(k => { 
         if (!parsed[k] || (typeof parsed[k] === 'string' && parsed[k].trim() === '')) {
-          violations.push(`${k.replace('_', ' ')} missing`);
+          violations.push(`${fieldNames[k]} missing`);
         }
       });
 
@@ -712,13 +739,18 @@ app.post('/api/check',
       const status = violations.length === 0 && reasons.length === 0 ? 'approved' : 
                     (reasons.length > 0 && violations.length === 0 ? 'rejected' : 'failed');
 
-      // Sanitize the parsed data before sending response
+      // Sanitize the parsed data before sending response (all 6 mandatory fields)
       const sanitizedParsed = {
         product_name: parsed.product_name?.substring(0, 200) || null,
         MRP: parsed.MRP?.substring(0, 50) || null,
         net_quantity: parsed.net_quantity?.substring(0, 50) || null,
         manufacturer: parsed.manufacturer?.substring(0, 100) || null,
-        country_of_origin: parsed.country_of_origin?.substring(0, 100) || null
+        country_of_origin: parsed.country_of_origin?.substring(0, 100) || null,
+        consumer_care: parsed.consumer_care?.substring(0, 150) || null,
+        date_of_manufacture: parsed.date_of_manufacture?.substring(0, 50) || null,
+        _ocr_confidence: parsed._ocr_confidence || 0,
+        _image_resolution: parsed._image_resolution,
+        _field_confidences: parsed._field_confidences
       };
 
       const log = {
