@@ -544,19 +544,70 @@ export default function ComplianceApp() {
           ) : (
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               <div className="bg-white p-4 rounded shadow">
-                <h3 className="font-semibold mb-3">Compliance Trend</h3>
-                {trendData.length > 0 ? (
+                <h3 className="font-semibold mb-3 flex items-center justify-between">
+                  Compliance Trend
+                  {analyticsData.loading && (
+                    <div className="text-xs text-blue-500 flex items-center">
+                      <div className="w-3 h-3 border border-blue-500 border-t-transparent rounded-full animate-spin mr-2"></div>
+                      Loading...
+                    </div>
+                  )}
+                </h3>
+                {analyticsData.error && trendData.length === 0 ? (
+                  <div className="text-sm text-red-600 p-2 bg-red-50 rounded">
+                    Error: {analyticsData.error}
+                  </div>
+                ) : trendData.length > 0 ? (
+                  <>
+                    {analyticsData.error && (
+                      <div className="text-xs text-yellow-600 p-2 bg-yellow-50 rounded mb-2">
+                        Using local data (API error: {analyticsData.error})
+                      </div>
+                    )}
                   <ResponsiveContainer width="100%" height={200}>
                     <LineChart data={trendData}>
-                      <XAxis dataKey="x" />
-                      <YAxis />
-                      <Tooltip />
-                      <CartesianGrid strokeDasharray="3 3" />
-                      <Line type="monotone" dataKey="compliance" stroke="#2563eb" strokeWidth={2} />
+                      <XAxis 
+                        dataKey="x" 
+                        tick={{ fontSize: 12 }}
+                        axisLine={{ stroke: '#e5e7eb' }}
+                      />
+                      <YAxis 
+                        domain={[0, 100]}
+                        tick={{ fontSize: 12 }}
+                        axisLine={{ stroke: '#e5e7eb' }}
+                        label={{ value: 'Compliance %', angle: -90, position: 'insideLeft' }}
+                      />
+                      <Tooltip 
+                        formatter={(value, name) => [`${value}%`, name === 'compliance' ? 'Compliance Score' : name]}
+                        labelFormatter={(label, payload) => {
+                          if (payload && payload[0] && payload[0].payload.date) {
+                            return `Date: ${payload[0].payload.date}`;
+                          }
+                          return `Point: ${label}`;
+                        }}
+                        contentStyle={{
+                          backgroundColor: '#fff',
+                          border: '1px solid #e5e7eb',
+                          borderRadius: '8px',
+                          boxShadow: '0 4px 6px -1px rgba(0, 0, 0, 0.1)'
+                        }}
+                      />
+                      <CartesianGrid strokeDasharray="3 3" stroke="#f3f4f6" />
+                      <Line 
+                        type="monotone" 
+                        dataKey="compliance" 
+                        stroke="#2563eb"
+                        strokeWidth={3}
+                        dot={{ fill: '#2563eb', strokeWidth: 2, r: 4 }}
+                        activeDot={{ r: 6, stroke: '#2563eb', strokeWidth: 2, fill: '#fff' }}
+                      />
                     </LineChart>
                   </ResponsiveContainer>
+                  </>
                 ) : (
-                  <div className="text-sm text-gray-600">No data yet.</div>
+                  <div className="text-sm text-gray-600">
+                    {analyticsData.loading ? 'Loading trend data...' : 'No compliance data yet.'}
+                  </div>
                 )}
               </div>
 
