@@ -226,45 +226,99 @@ function sanitizeError(error, isProduction = process.env.NODE_ENV === 'productio
   return error.message.replace(/file:\/\/[^\s]+/g, '[FILE_PATH]').replace(/https?:\/\/[^\s]+/g, '[URL]');
 }
 
-// Helper function to extract structured data (JSON-LD, OpenGraph)
+// Enhanced function to extract structured data (JSON-LD, OpenGraph) with Flipkart support
 function extractStructuredData($) {
   const data = {};
   
   // Try JSON-LD first (most reliable for e-commerce)
   $('script[type="application/ld+json"]').each((i, el) => {
     try {
-      const jsonData = JSON.parse($(el).html());
-      const product = Array.isArray(jsonData) ? jsonData.find(item => item['@type'] === 'Product') : 
-                     jsonData['@type'] === 'Product' ? jsonData : null;
+      const jsonText = $(el).html().trim();
+      if (!jsonText) return;
       
-      if (product) {
-        data.product_name = product.name;
-        data.price = product.offers?.price || product.offers?.[0]?.price;
-        data.manufacturer = product.brand?.name || product.manufacturer?.name;
-        data.net_quantity = product.weight?.value || product.size;
-        data.country_of_origin = product.countryOfOrigin;
+      const jsonData = JSON.parse(jsonText);
+      
+      // Handle array of JSON-LD objects
+      const schemas = Array.isArray(jsonData) ? jsonData : [jsonData];
+      
+      for (const schema of schemas) {
+        // Standard Product schema
+        if (schema['@type'] === 'Product') {
+          data.product_name = data.product_name || schema.name;
+          data.price = data.price || schema.offers?.price || schema.offers?.[0]?.price;
+          data.manufacturer = data.manufacturer || schema.brand?.name || schema.manufacturer?.name;
+          data.net_quantity = data.net_quantity || schema.weight?.value || schema.size;
+          data.country_of_origin = data.country_of_origin || schema.countryOfOrigin;
+        }
+        
+        // BreadcrumbList can contain product info
+        if (schema['@type'] === 'BreadcrumbList' && schema.itemListElement) {
+          const productBreadcrumb = schema.itemListElement.find(item => 
+            item.item && item.item.name && !item.item.name.includes('Home') && !item.item.name.includes('Category')
+          );
+          if (productBreadcrumb && !data.product_name) {
+            data.product_name = productBreadcrumb.item.name;
+          }
+        }
+        
+        // WebPage or WebSite can contain product details
+        if ((schema['@type'] === 'WebPage' || schema['@type'] === 'WebSite') && schema.mainEntity) {
+          const mainEntity = schema.mainEntity;
+          if (mainEntity['@type'] === 'Product') {
+            data.product_name = data.product_name || mainEntity.name;
+            data.price = data.price || mainEntity.offers?.price || mainEntity.offers?.[0]?.price;
+            data.manufacturer = data.manufacturer || mainEntity.brand?.name || mainEntity.manufacturer?.name;
+          }
+        }
+        
+        // Flipkart-specific: Organization schema sometimes contains brand info
+        if (schema['@type'] === 'Organization' && schema.name && !data.manufacturer) {
+          // Only use if it looks like a brand name (not "Flipkart")
+          if (!schema.name.toLowerCase().includes('flipkart')) {
+            data.manufacturer = schema.name;
+          }
+        }
       }
     } catch (e) {
+      console.log('JSON-LD parsing error:', e.message);
       // Continue to next script tag
     }
   });
   
-  // Fallback to OpenGraph/meta tags
+  // Enhanced OpenGraph/meta tag extraction
   if (!data.product_name) {
     data.product_name = $('meta[property="og:title"]').attr('content') ||
-                       $('meta[name="title"]').attr('content');
+                       $('meta[name="title"]').attr('content') ||
+                       $('meta[property="og:site_name"]').attr('content');
   }
   
   if (!data.price) {
-    data.price = $('meta[property="product:price:amount"]').attr('content') ||
-                 $('meta[name="price"]').attr('content');
+    const priceAmount = $('meta[property="product:price:amount"]').attr('content') ||
+                       $('meta[name="price"]').attr('content');
+    // Only use price amount, not currency code
+    if (priceAmount && /\d/.test(priceAmount)) {
+      data.price = priceAmount;
+    }
   }
   
   if (!data.manufacturer) {
     data.manufacturer = $('meta[property="product:brand"]').attr('content') ||
-                       $('meta[name="brand"]').attr('content');
+                       $('meta[name="brand"]').attr('content') ||
+                       $('meta[property="og:brand"]').attr('content');
   }
   
+  // Additional meta tag checks for Flipkart
+  if (!data.net_quantity) {
+    data.net_quantity = $('meta[name="weight"]').attr('content') ||
+                       $('meta[property="product:weight"]').attr('content');
+  }
+  
+  if (!data.country_of_origin) {
+    data.country_of_origin = $('meta[name="origin"]').attr('content') ||
+                            $('meta[property="product:origin"]').attr('content');
+  }
+  
+  console.log('Structured data extracted:', Object.keys(data).filter(k => data[k]));
   return data;
 }
 
@@ -437,7 +491,7 @@ async function scrapeProduct(url) {
     'User-Agent': randomUserAgent,
     'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
     'Accept-Language': 'en-US,en;q=0.9,hi-IN;q=0.8,hi;q=0.7,mr;q=0.6',
-    'Accept-Encoding': 'gzip, deflate, br, zstd',
+    'Accept-Encoding': 'gzip, deflate, br',
     'Cache-Control': 'max-age=0',
     'Sec-Ch-Ua': '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
     'Sec-Ch-Ua-Mobile': '?0',
@@ -502,28 +556,64 @@ async function scrapeProduct(url) {
   // Site-specific extractors for enhanced accuracy
   
   if (isFlipkart) {
-    // Flipkart-specific selectors
-    product_name = product_name || ($('.VU-ZEz').text() ||
-                   $('h1[class*="title"]').text() ||
-                   $('._35KyD6').text() ||
-                   $('h1').first().text()).trim() || null;
+    // Enhanced Flipkart-specific selectors (2024 current structure)
+    console.log('Processing Flipkart URL with enhanced selectors');
     
-    price = price || ($('._1_WHN1').text() ||
-            $('._30jeq3._16Jk6d').text() ||
-            $('._3I9_wc._2p6lqe').text() ||
-            $('[class*="price"]').first().text()).trim() || null;
+    // Product name - try multiple current selectors
+    product_name = product_name || (
+      $('span[class*="B_NuCI"]').text() ||  // Current main title class
+      $('h1[class*="x2Jnos"]').text() ||    // Alternative title class  
+      $('span.B_NuCI').text() ||            // Main product title
+      $('h1').filter(function() {
+        return $(this).text().length > 10;   // Find substantial h1 content
+      }).first().text() ||
+      $('._35KyD6').text() ||               // Fallback older selector
+      $('[data-testid="lblPDPProductName"]').text() ||
+      $('h1').first().text()
+    ).trim() || null;
     
-    manufacturer = manufacturer || ($('._2WkVRV._13WGFt').text() ||
-                   $('.row:contains("Brand") .col-8').text() ||
-                   $('._21Ahn-').text() ||
-                   $('tr:contains("Brand") td').text()).trim() || null;
+    // Price - multiple current price selectors
+    price = price || (
+      $('div[class*="_30jeq3 _16Jk6d"]').text() ||  // Current price format
+      $('div[class*="_30jeq3"]').text() ||          // Price container
+      $('._3I9_wc._2p6lqe').text() ||               // Discounted price
+      $('._1_WHN1').text() ||                       // MRP
+      $('div[class*="price"]').first().text() ||    // Generic price
+      $('[data-testid="lblPDPPrice"]').text() ||
+      $('._25b18c .notranslate').text()             // Another price format
+    ).trim() || null;
     
-    net_quantity = net_quantity || ($('.row:contains("Weight") .col-8').text() ||
-                   $('.row:contains("Dimensions") .col-8').text() ||
-                   $('._3dG3ix').text()).trim() || null;
+    // Manufacturer/Brand - enhanced extraction
+    manufacturer = manufacturer || (
+      $('div:contains("Brand") + div').text() ||           // Specification row
+      $('td:contains("Brand")').next('td').text() ||       // Table format
+      $('._2WkVRV._13WGFt').text() ||                      // Old brand selector
+      $('tr:contains("Brand") td:last').text() ||          // Table last cell
+      $('._21Ahn-').text() ||                              // Fallback
+      $('[data-testid="lblPDPBrand"]').text() ||
+      $('div[class*="brand"]').text()                      // Generic brand class
+    ).trim() || null;
     
-    country_of_origin = country_of_origin || ($('.row:contains("Country of Origin") .col-8').text() ||
-                        $('.row:contains("Made in") .col-8').text()).trim() || null;
+    // Net quantity/weight
+    net_quantity = net_quantity || (
+      $('div:contains("Net Quantity") + div').text() ||    // Specification format
+      $('div:contains("Weight") + div').text() ||
+      $('td:contains("Net Quantity")').next('td').text() ||
+      $('td:contains("Weight")').next('td').text() ||
+      $('._3dG3ix').text() ||                              // Fallback older
+      $('[data-testid="lblPDPNetQuantity"]').text() ||
+      $('div:contains("Pack Size") + div').text()          // Alternative format
+    ).trim() || null;
+    
+    // Country of origin
+    country_of_origin = country_of_origin || (
+      $('div:contains("Country of Origin") + div').text() ||
+      $('td:contains("Country of Origin")').next('td').text() ||
+      $('div:contains("Made in") + div').text() ||
+      $('td:contains("Made in")').next('td').text() ||
+      $('[data-testid="lblPDPOrigin"]').text() ||
+      $('div:contains("Manufactured") + div').text()       // Alternative phrasing
+    ).trim() || null;
                         
   } else if (isMyntra) {
     // Enhanced Myntra-specific selectors (updated for current site structure)
