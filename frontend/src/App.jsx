@@ -7,8 +7,27 @@ export default function ComplianceApp() {
   const [view, setView] = useState('seller'); // seller | backend
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
-  const [logs, setLogs] = useState([]);
+  const [logs, setLogs] = useState(() => {
+    // Load submissions from localStorage on initialization
+    try {
+      const savedLogs = localStorage.getItem('compliscan_submissions');
+      return savedLogs ? JSON.parse(savedLogs) : [];
+    } catch (error) {
+      console.warn('Failed to load saved submissions:', error);
+      return [];
+    }
+  });
+  const [selectedSubmission, setSelectedSubmission] = useState(null);
   const fileInputRef = useRef();
+
+  // Save submissions to localStorage whenever logs change
+  React.useEffect(() => {
+    try {
+      localStorage.setItem('compliscan_submissions', JSON.stringify(logs));
+    } catch (error) {
+      console.warn('Failed to save submissions:', error);
+    }
+  }, [logs]);
 
   // Mock rule engine run on parsed fields
   function runRuleEngine(parsed) {
@@ -68,6 +87,7 @@ export default function ComplianceApp() {
     event?.preventDefault?.();
     setSubmitting(true);
     setResult(null);
+    setSelectedSubmission(null); // Clear previous submission selection for new scans
 
     try {
       const file = fileInputRef.current?.files?.[0];
@@ -109,6 +129,19 @@ export default function ComplianceApp() {
     if (status === 'approved') return 'bg-green-100 text-green-800';
     if (status === 'failed') return 'bg-yellow-100 text-yellow-800';
     return 'bg-red-100 text-red-800';
+  }
+
+  // Handle viewing a previous submission
+  function viewSubmission(submission) {
+    setResult(submission);
+    setSelectedSubmission(submission);
+  }
+
+  // Clear selected submission and reset to new scan mode
+  function clearSelection() {
+    setResult(null);
+    setSelectedSubmission(null);
+    if (fileInputRef.current) fileInputRef.current.value = null;
   }
 
   // Small analytics
@@ -228,6 +261,7 @@ export default function ComplianceApp() {
                     onClick={() => { 
                       if (fileInputRef.current) fileInputRef.current.value = null; 
                       setResult(null);
+                      setSelectedSubmission(null); // Clear selection state
                     }}
                     className="px-4 py-3 border border-gray-300 rounded-lg hover:bg-gray-50 transition-all duration-200 transform hover:scale-105"
                   >
@@ -239,6 +273,19 @@ export default function ComplianceApp() {
               {/* Quick status summary in sidebar */}
               {result && (
                 <div className="mt-6 pt-6 border-t border-gray-200">
+                  <div className="flex items-center justify-between mb-3">
+                    <h3 className="text-sm font-semibold text-gray-700">
+                      {selectedSubmission ? '📋 Viewing Previous Scan' : '✨ Latest Scan'}
+                    </h3>
+                    {selectedSubmission && (
+                      <button
+                        onClick={clearSelection}
+                        className="text-xs text-blue-600 hover:text-blue-800 underline"
+                      >
+                        New Scan
+                      </button>
+                    )}
+                  </div>
                   <div className={`p-4 rounded-lg ${
                     result.status === 'approved' ? 'bg-green-50 border border-green-200' : 
                     result.status === 'failed' ? 'bg-yellow-50 border border-yellow-200' : 
@@ -257,6 +304,11 @@ export default function ComplianceApp() {
                     {result.violations?.length > 0 && (
                       <p className="text-xs text-gray-600">
                         {result.violations.length} issue{result.violations.length !== 1 ? 's' : ''} found
+                      </p>
+                    )}
+                    {selectedSubmission && (
+                      <p className="text-xs text-gray-500 mt-2">
+                        📅 {new Date(selectedSubmission.timestamp).toLocaleString()}
                       </p>
                     )}
                   </div>
@@ -469,25 +521,85 @@ export default function ComplianceApp() {
           )}
 
           {/* Bottom: submission logs */}
-          <div className="bg-white p-4 rounded shadow mt-6">
-            <h3 className="font-semibold mb-3">Recent Submissions ({logs.length})</h3>
+          <div className="bg-white rounded-xl shadow-lg p-6 mt-6 transition-all duration-300 hover:shadow-xl">
+            <div className="flex items-center justify-between mb-4">
+              <h3 className="text-lg font-semibold text-gray-800 flex items-center">
+                <span className="mr-2">📋</span>
+                Submission History ({logs.length})
+              </h3>
+              {logs.length > 0 && (
+                <button
+                  onClick={() => {
+                    if (confirm('Clear all submission history? This cannot be undone.')) {
+                      setLogs([]);
+                      setResult(null);
+                      setSelectedSubmission(null);
+                    }
+                  }}
+                  className="text-xs text-red-600 hover:text-red-800 underline"
+                >
+                  Clear All
+                </button>
+              )}
+            </div>
             {logs.length > 0 ? (
-              <div className="space-y-2 max-h-96 overflow-y-auto">
+              <div className="space-y-3 max-h-96 overflow-y-auto">
                 {logs.map((log) => (
-                  <div key={log.id} className={`p-3 rounded border ${log.highlight ? 'border-red-200 bg-red-50' : 'border-gray-200'}`}>
-                    <div className="flex items-center justify-between text-sm">
-                      <span className="font-medium">{log.product_preview}</span>
-                      <span className={`px-2 py-1 rounded text-xs ${statusColor(log.status)}`}>{log.status}</span>
+                  <div 
+                    key={log.id} 
+                    onClick={() => viewSubmission(log)}
+                    className={`p-4 rounded-lg border cursor-pointer transition-all duration-200 hover:shadow-md hover:border-emerald-300 ${
+                      selectedSubmission?.id === log.id 
+                        ? 'border-emerald-500 bg-emerald-50' 
+                        : log.highlight 
+                          ? 'border-red-200 bg-red-50 hover:bg-red-100' 
+                          : 'border-gray-200 hover:bg-gray-50'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between text-sm mb-2">
+                      <span className="font-medium text-gray-800 flex items-center">
+                        <span className="mr-2">
+                          {log.input_type === 'image' ? '📷' : '🔗'}
+                        </span>
+                        {log.product_preview}
+                      </span>
+                      <span className={`px-2 py-1 rounded-full text-xs font-medium ${statusColor(log.status)}`}>
+                        {log.status}
+                      </span>
                     </div>
-                    <div className="text-xs text-gray-500 mt-1">
-                      {new Date(log.timestamp).toLocaleString()} • Score: {log.compliance_score}%
-                      {log.violations?.length > 0 && ` • ${log.violations.length} violation(s)`}
+                    <div className="text-xs text-gray-500 flex items-center justify-between">
+                      <span>
+                        📅 {new Date(log.timestamp).toLocaleString()}
+                      </span>
+                      <div className="flex items-center space-x-3">
+                        <span className="font-medium">
+                          🎯 Score: {log.compliance_score}%
+                        </span>
+                        {log.violations?.length > 0 && (
+                          <span className="text-red-600">
+                            ⚠️ {log.violations.length} issue{log.violations.length !== 1 ? 's' : ''}
+                          </span>
+                        )}
+                      </div>
                     </div>
+                    {selectedSubmission?.id === log.id && (
+                      <div className="mt-2 pt-2 border-t border-emerald-200">
+                        <span className="text-xs text-emerald-700 font-medium">
+                          👆 Currently viewing this submission
+                        </span>
+                      </div>
+                    )}
                   </div>
                 ))}
               </div>
             ) : (
-              <div className="text-sm text-gray-600">No submissions yet.</div>
+              <div className="text-center py-8">
+                <div className="w-16 h-16 bg-gray-100 rounded-full flex items-center justify-center mx-auto mb-3">
+                  <span className="text-gray-400 text-xl">📋</span>
+                </div>
+                <p className="text-sm text-gray-600">No submissions yet.</p>
+                <p className="text-xs text-gray-500 mt-1">Your scan history will appear here</p>
+              </div>
             )}
           </div>
         </section>
