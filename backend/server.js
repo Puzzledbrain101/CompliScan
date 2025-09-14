@@ -16,6 +16,7 @@ const path = require('path');
 // Import OCR processor and schema
 const { processLabelImage } = require('./ocr-processor');
 const { createNormalizedLabel, validateLabel } = require('./schema');
+const { operations: db } = require('./database');
 
 // Initialize OpenAI client (optional - only if API key provided)
 // the newest OpenAI model is "gpt-5" which was released August 7, 2025. do not change this unless explicitly requested by the user
@@ -730,6 +731,7 @@ app.post('/api/check',
   upload.single('image'), 
   async (req, res) => {
     let uploadedFilePath = null;
+    const startTime = Date.now(); // Track processing time
     
     try {
       // Check for validation errors
@@ -875,7 +877,55 @@ app.post('/api/check',
         await cleanupFile(uploadedFilePath);
       }
 
-      // In production save to DB
+      // Store submission in database
+      try {
+        const submissionData = {
+          id: log.id,
+          user_id: 'demo_user',
+          product_name: normalizedLabel.product_name,
+          input_type: req.file ? 'image' : 'url',
+          input_source: req.file ? req.file.originalname : (req.body.url || null),
+          
+          // Legal Metrology fields
+          manufacturer: normalizedLabel.manufacturer,
+          net_quantity: normalizedLabel.net_quantity,
+          mrp: normalizedLabel.MRP,
+          consumer_care: normalizedLabel.consumer_care,
+          date_of_manufacture: normalizedLabel.date_of_manufacture,
+          country_of_origin: normalizedLabel.country_of_origin,
+          
+          // Compliance results
+          compliance_score: normalizedLabel.compliance_score,
+          status: ['approved', 'failed', 'needs_review'].includes(normalizedLabel.status) 
+            ? normalizedLabel.status 
+            : 'needs_review', // Default fallback for unknown status
+          
+          // Technical metadata
+          ocr_confidence: normalizedLabel._ocr_confidence,
+          image_width: normalizedLabel._image_resolution?.width,
+          image_height: normalizedLabel._image_resolution?.height,
+          processing_time_ms: Date.now() - startTime,
+          
+          // Raw data
+          raw_data: normalizedLabel,
+          field_confidences: normalizedLabel._field_confidences,
+          extracted_text: normalizedLabel._extracted_text
+        };
+
+        // Store submission
+        db.insertSubmission(submissionData);
+        
+        // Store violations separately
+        if (normalizedLabel.violations && normalizedLabel.violations.length > 0) {
+          db.insertViolations(log.id, normalizedLabel.violations);
+        }
+
+        console.log('Submission stored in database:', log.id);
+      } catch (dbError) {
+        console.error('Failed to store submission in database:', dbError);
+        // Continue without failing the request - database storage is not critical for immediate response
+      }
+
       return res.json(log);
     } catch (err) {
       // Clean up uploaded file on error
@@ -899,6 +949,150 @@ app.post('/api/check',
     }
   }
 );
+
+// Get submission history
+app.get('/api/submissions', async (req, res) => {
+  try {
+    const { limit = 50, offset = 0, user_id = 'demo_user' } = req.query;
+    
+    const submissions = db.getSubmissions(user_id, parseInt(limit), parseInt(offset));
+    
+    // Transform for frontend compatibility
+    const formattedSubmissions = submissions.map(sub => ({
+      id: sub.id,
+      product_preview: sub.product_name || 'Unknown product',
+      input_type: sub.input_type,
+      parsed: {
+        product_name: sub.product_name,
+        MRP: sub.raw_data.MRP,
+        manufacturer: sub.raw_data.manufacturer,
+        net_quantity: sub.raw_data.net_quantity,
+        country_of_origin: sub.raw_data.country_of_origin,
+        consumer_care: sub.raw_data.consumer_care,
+        date_of_manufacture: sub.raw_data.date_of_manufacture,
+        _ocr_confidence: sub.raw_data._ocr_confidence,
+        _image_resolution: sub.raw_data._image_resolution,
+        _field_confidences: sub.field_confidences
+      },
+      compliance_score: sub.compliance_score,
+      status: sub.status,
+      violations: [], // Will be populated if needed
+      timestamp: sub.timestamp,
+      highlight: sub.status === 'failed' || sub.compliance_score < 100
+    }));
+
+    res.json({
+      submissions: formattedSubmissions,
+      total: formattedSubmissions.length,
+      has_more: formattedSubmissions.length === parseInt(limit)
+    });
+  } catch (error) {
+    console.error('Failed to get submissions:', error);
+    res.status(500).json({ error: 'Failed to retrieve submissions' });
+  }
+});
+
+// Get single submission with full details
+app.get('/api/submissions/:id', async (req, res) => {
+  try {
+    const submission = db.getSubmissionById(req.params.id);
+    
+    if (!submission) {
+      return res.status(404).json({ error: 'Submission not found' });
+    }
+
+    // Transform for frontend compatibility
+    const formatted = {
+      id: submission.id,
+      product_preview: submission.product_name || 'Unknown product',
+      input_type: submission.input_type,
+      parsed: {
+        product_name: submission.product_name,
+        MRP: submission.raw_data.MRP,
+        manufacturer: submission.raw_data.manufacturer,
+        net_quantity: submission.raw_data.net_quantity,
+        country_of_origin: submission.raw_data.country_of_origin,
+        consumer_care: submission.raw_data.consumer_care,
+        date_of_manufacture: submission.raw_data.date_of_manufacture,
+        _ocr_confidence: submission.raw_data._ocr_confidence,
+        _image_resolution: submission.raw_data._image_resolution,
+        _field_confidences: submission.field_confidences
+      },
+      compliance_score: submission.compliance_score,
+      status: submission.status,
+      violations: submission.violations.map(v => v.message),
+      timestamp: submission.created_at,
+      highlight: submission.status === 'failed' || submission.compliance_score < 100
+    };
+
+    res.json(formatted);
+  } catch (error) {
+    console.error('Failed to get submission:', error);
+    res.status(500).json({ error: 'Failed to retrieve submission' });
+  }
+});
+
+// Analytics endpoints
+app.get('/api/analytics/trend', async (req, res) => {
+  try {
+    const { days = 30, user_id = 'demo_user' } = req.query;
+    const trendData = db.getComplianceTrend(user_id, parseInt(days));
+    
+    // Transform for recharts format
+    const formatted = trendData.map((item, index) => ({
+      x: index + 1,
+      compliance: Math.round(item.avg_score || 0),
+      date: item.date,
+      submissions: item.submissions
+    }));
+
+    res.json(formatted);
+  } catch (error) {
+    console.error('Failed to get trend data:', error);
+    res.status(500).json({ error: 'Failed to retrieve trend data' });
+  }
+});
+
+app.get('/api/analytics/brands', async (req, res) => {
+  try {
+    const { limit = 10, user_id = 'demo_user' } = req.query;
+    const brandData = db.getViolationsByBrand(user_id, parseInt(limit));
+    
+    // Transform for recharts format
+    const formatted = brandData.map(item => ({
+      brand: item.brand || 'Unknown',
+      violations: item.total_violations || 0,
+      submissions: item.total_submissions || 0,
+      avg_score: Math.round(item.avg_score || 0)
+    }));
+
+    res.json(formatted);
+  } catch (error) {
+    console.error('Failed to get brand data:', error);
+    res.status(500).json({ error: 'Failed to retrieve brand data' });
+  }
+});
+
+app.get('/api/analytics/stats', async (req, res) => {
+  try {
+    const { user_id = 'demo_user' } = req.query;
+    const stats = db.getOverallStats(user_id);
+    
+    res.json({
+      total_submissions: stats.total_submissions || 0,
+      avg_compliance_score: Math.round(stats.avg_compliance_score || 0),
+      approved_count: stats.approved_count || 0,
+      failed_count: stats.failed_count || 0,
+      needs_review_count: stats.needs_review_count || 0,
+      last_submission: stats.last_submission,
+      image_submissions: stats.image_submissions || 0,
+      url_submissions: stats.url_submissions || 0
+    });
+  } catch (error) {
+    console.error('Failed to get stats:', error);
+    res.status(500).json({ error: 'Failed to retrieve statistics' });
+  }
+});
 
 // Health check endpoint
 app.get('/health', (req, res) => {
