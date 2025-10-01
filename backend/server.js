@@ -100,21 +100,21 @@ const corsOptions = {
     // Allow requests with no origin (like mobile apps or curl requests)
     if (!origin) return callback(null, true);
     
-    const allowedOrigins = process.env.NODE_ENV === 'production'
-          'https://compliscan-blond.vercel.app',
-          'https://compliscan-79jw4lod7-swayam-shahs-projects-9ce01a2a.vercel.app',
-          'https://compliscan-swayam-shahs-projects-9ce01a2a.vercel.app',
-      ? [
-          process.env.FRONTEND_URL,
-          process.env.DOMAIN ? `https://${process.env.DOMAIN}` : null,
-          'https://localhost:5000' // Replit preview
-        ].filter(Boolean)
-      : [
-          'http://localhost:5000',
-          'https://localhost:5000',
-          /^https:\/\/.*\.replit\.dev$/,
-          /^https:\/\/.*\.repl\.co$/
-        ];
+   const allowedOrigins = process.env.NODE_ENV === 'production'
+  ? [
+      'https://compliscan-blond.vercel.app',
+      'https://compliscan-79jw4lod7-swayam-shahs-projects-9ce01a2a.vercel.app',
+      'https://compliscan-swayam-shahs-projects-9ce01a2a.vercel.app',
+      process.env.FRONTEND_URL,
+      process.env.DOMAIN ? `https://${process.env.DOMAIN}` : null,
+      'https://localhost:5000' // Replit preview
+    ].filter(Boolean)
+  : [
+      'http://localhost:5000',
+      'https://localhost:5000',
+      /^https:\/\/.*\.replit\.dev$/,
+      /^https:\/\/.*\.repl\.co$/
+    ];
     
     const isAllowed = allowedOrigins.some(allowedOrigin => {
       if (typeof allowedOrigin === 'string') {
