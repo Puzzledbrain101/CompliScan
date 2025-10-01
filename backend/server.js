@@ -101,6 +101,9 @@ const corsOptions = {
     if (!origin) return callback(null, true);
     
     const allowedOrigins = process.env.NODE_ENV === 'production'
+          'https://compliscan-blond.vercel.app',
+          'https://compliscan-79jw4lod7-swayam-shahs-projects-9ce01a2a.vercel.app',
+          'https://compliscan-swayam-shahs-projects-9ce01a2a.vercel.app',
       ? [
           process.env.FRONTEND_URL,
           process.env.DOMAIN ? `https://${process.env.DOMAIN}` : null,
