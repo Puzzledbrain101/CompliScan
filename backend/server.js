@@ -1139,8 +1139,8 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 8000;
-app.listen(PORT, 'localhost', () => {
-  console.log(`Server running on localhost:${PORT}`);
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
   console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
   console.log(`Security headers enabled: ${process.env.NODE_ENV === 'production' ? 'Yes' : 'Development mode'}`);
 });
