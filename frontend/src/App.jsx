@@ -34,6 +34,9 @@ export default function ComplianceApp() {
   const fileInputRef = useRef();
   const linkInputRef = useRef();
 
+  // API Base URL - Updated for production
+  const API_BASE_URL = 'https://compliscan-backend.onrender.com';
+
   // Save submissions to localStorage whenever logs change
   useEffect(() => {
     try {
@@ -89,7 +92,7 @@ export default function ComplianceApp() {
 }
   // Function to call the backend API
   async function callBackendAPI({ type, file, url }) {
-    const backendUrl = `/api/check`;
+    const backendUrl = `${API_BASE_URL}/api/check`;
     const formData = new FormData();
     if (type === 'url') {
       if (!url || !url.startsWith('http')) throw new Error('Invalid URL');
@@ -207,9 +210,9 @@ export default function ComplianceApp() {
     setAnalyticsError(null);
     try {
       const [trendRes, brandsRes, statsRes] = await Promise.all([
-        fetch('/api/analytics/trend').then(r => r.json()),
-        fetch('/api/analytics/brands').then(r => r.json()),
-        fetch('/api/analytics/stats').then(r => r.json())
+        fetch(`${API_BASE_URL}/api/analytics/trend`).then(r => r.json()),
+        fetch(`${API_BASE_URL}/api/analytics/brands`).then(r => r.json()),
+        fetch(`${API_BASE_URL}/api/analytics/stats`).then(r => r.json())
       ]);
       
       // Transform trend data for the chart
