@@ -11,6 +11,7 @@ const mimeTypes = require('mime-types');
 const dns = require('dns').promises;
 const fs = require('fs').promises;
 const path = require('path');
+const cors = require('cors');
 
 // Import OCR processor and schema
 const { processLabelImage } = require('./ocr-processor');
@@ -50,6 +51,26 @@ const app = express();
 
 // Trust proxy when behind reverse proxy (Replit environment)
 app.set('trust proxy', 1);
+
+// SIMPLE AND RELIABLE CORS CONFIGURATION
+const corsOptions = {
+  origin: [
+    'https://compliscan-blond.vercel.app',
+    'https://compliscan-o505uw4t9-swayam-shahs-projects-9ce01a2a.vercel.app',
+    'https://compliscan-79jw4lod7-swayam-shahs-projects-9ce01a2a.vercel.app',
+    'https://compliscan-swayam-shahs-projects-9ce01a2a.vercel.app',
+    'http://localhost:3000',
+    'http://localhost:5000',
+    'https://localhost:5000'
+  ],
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
+  optionsSuccessStatus: 200
+};
+
+// Apply CORS middleware
+app.use(cors(corsOptions));
 
 // Apply security headers
 app.use(helmet({
@@ -93,53 +114,6 @@ const checkLimiter = rateLimit({
 
 app.use(limiter);
 app.use('/api/check', checkLimiter);
-
-// Configure CORS to be more restrictive and production-ready
-const corsOptions = {
-  origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps or curl requests)
-    if (!origin) return callback(null, true);
-    
-   const allowedOrigins = process.env.NODE_ENV === 'production'
-  ? [
-      'https://compliscan-o505uw4t9-swayam-shahs-projects-9ce01a2a.vercel.app', // ADDED THIS LINE
-      'https://compliscan-blond.vercel.app',
-      'https://compliscan-79jw4lod7-swayam-shahs-projects-9ce01a2a.vercel.app',
-      'https://compliscan-swayam-shahs-projects-9ce01a2a.vercel.app',
-      process.env.FRONTEND_URL,
-      process.env.DOMAIN ? `https://${process.env.DOMAIN}` : null,
-      'https://localhost:5000' // Replit preview
-    ].filter(Boolean)
-  : [
-      'http://localhost:5000',
-      'https://localhost:5000',
-      /^https:\/\/.*\.replit\.dev$/,
-      /^https:\/\/.*\.repl\.co$/
-    ];
-    
-    const isAllowed = allowedOrigins.some(allowedOrigin => {
-      if (typeof allowedOrigin === 'string') {
-        return origin === allowedOrigin;
-      }
-      if (allowedOrigin instanceof RegExp) {
-        return allowedOrigin.test(origin);
-      }
-      return false;
-    });
-    
-    if (isAllowed) {
-      callback(null, true);
-    } else {
-      console.warn(`CORS blocked origin: ${origin}`);
-      callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  optionsSuccessStatus: 200,
-  methods: ['GET', 'POST', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  exposedHeaders: ['X-RateLimit-Limit', 'X-RateLimit-Remaining']
-};
 
 app.use(express.json({ limit: '10mb' })); // Prevent large JSON payloads
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
