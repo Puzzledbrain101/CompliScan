@@ -46,6 +46,23 @@ Open http://localhost:5000.
 For URL checks, consumer care and date of manufacture are rarely shown on listings, so when missing
 they are reported as "not verifiable" rather than counted as violations.
 
+### How URL checks read a page
+
+There is no per-site code. `backend/scrapers/` reads every layer a product page offers and keeps,
+for each declaration, the most reliable value found:
+
+1. **Embedded app data** - JSON the storefront renders from (`__NEXT_DATA__`, `window.__*_STATE__`, JSON
+   script tags), searched for field names such as `countryOfOrigin`, `manufacturerName`, `mrp`, `packSize`,
+   plus label/value spec lists and widgets inside it. The variant in the link (e.g. `?skuId=`) wins.
+2. **Visible text** - spec tables, definition lists and label/value pairs, run through the same extractor
+   as OCR, counting only values that sit next to their label.
+3. **schema.org JSON-LD** - name, price, size and origin as a fallback. The brand is never used as the
+   manufacturer, and the listed price ranks below a declared MRP.
+
+Sites that block automated requests (e.g. BigBasket, often Amazon) get a clear message suggesting a label
+photo instead. Details some stores load only after a click (e.g. Myntra's manufacturer popup) are not in
+the page and show as missing.
+
 ## Environment
 
 Backend:
