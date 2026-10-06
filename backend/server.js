@@ -763,6 +763,8 @@ app.post('/api/check',
         status: normalizedLabel.status,
         violations: normalizedLabel.violations.map(v => v.message),
         unverifiable: normalizedLabel.unverifiable_fields.map(u => u.message),
+        issues: normalizedLabel.violations, // { field, type, severity, message }
+        unverifiable_fields: normalizedLabel.unverifiable_fields, // { field, message }
         reasons: reasons, // Keep quality reasons separate
         timestamp: normalizedLabel._timestamp,
         // Include full normalized data for future use
@@ -878,6 +880,8 @@ function formatSubmission(sub) {
     status: sub.status,
     violations: (raw.violations || []).map(v => v.message),
     unverifiable: (raw.unverifiable_fields || []).map(u => u.message),
+    issues: raw.violations || [],
+    unverifiable_fields: raw.unverifiable_fields || [],
     reasons: [],
     timestamp: toIsoUtc(sub.created_at),
     highlight: sub.status !== 'approved'
