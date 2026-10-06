@@ -60,7 +60,8 @@ for each declaration, the most reliable value found:
    manufacturer, and the listed price ranks below a declared MRP.
 
 Sites that block automated requests (e.g. BigBasket, often Amazon) get a clear message suggesting a label
-photo instead. Details some stores load only after a click (e.g. Myntra's manufacturer popup) are not in
+photo, the **CompliScan this page** bookmarklet (in the web app), or the demo Chrome extension in
+[`extension/`](extension/README.md), which check the page from the user's own browser. Details some stores load only after a click (e.g. Myntra's manufacturer popup) are not in
 the page and show as missing.
 
 ## Environment

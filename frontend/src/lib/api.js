@@ -33,6 +33,10 @@ export function runCheck(input) {
   return request('/api/check', { method: 'POST', body: form });
 }
 
+export function getCheck(id) {
+  return request(`/api/submissions/${encodeURIComponent(id)}`);
+}
+
 export async function getHistory(limit = 50) {
   const data = await request(`/api/submissions?limit=${limit}`);
   return Array.isArray(data.submissions) ? data.submissions : [];

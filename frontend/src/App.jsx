@@ -5,7 +5,7 @@ import Analytics from './components/Analytics.jsx';
 import History from './components/History.jsx';
 import BookmarkletCard from './components/BookmarkletCard.jsx';
 import { ShieldCheck } from './components/icons.jsx';
-import { getAnalytics, getHistory, runCheck } from './lib/api.js';
+import { getAnalytics, getCheck, getHistory, runCheck } from './lib/api.js';
 import { statusOf, toEntry } from './lib/results.js';
 import { clearHandoffParam, isHandoffLaunch, listenForPage } from './lib/handoff.js';
 
@@ -43,6 +43,25 @@ export default function App() {
     loadHistory();
     loadAnalytics();
   }, [loadHistory, loadAnalytics]);
+
+  // Opened with ?check=<id> (e.g. "Open full result" in the extension): show that check
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    const id = url.searchParams.get('check');
+    if (!id) return;
+    url.searchParams.delete('check');
+    window.history.replaceState(null, '', url.pathname + url.search + url.hash);
+    setScan({ state: 'loading', kind: 'saved' });
+    getCheck(id)
+      .then(entry => {
+        setSelected(entry);
+        setScan({ state: 'idle' });
+      })
+      .catch(err => setScan({
+        state: 'error',
+        message: /not found/i.test(err.message) ? 'That check could not be found. It may have been removed.' : err.message
+      }));
+  }, []);
 
   // Opened by the bookmarklet: wait for the store page it sends
   useEffect(() => {
