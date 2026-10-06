@@ -49,7 +49,6 @@ they are reported as "not verifiable" rather than counted as violations.
 ## Environment
 
 Backend:
-- `OPENAI_API_KEY` (optional) - enables AI normalization of scraped fields
 - `CORS_ORIGINS` (optional) - comma-separated allowed frontend origins; defaults to the current Vercel and localhost origins
 - `NODE_ENV=production` - generic error messages, no debug fields in responses
 
