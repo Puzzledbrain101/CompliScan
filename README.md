@@ -20,6 +20,14 @@ npm start
 
 Runs on port 8000. The SQLite database is created at `backend/data/compliscan.db` on first start.
 
+## Tests
+```
+cd backend
+npm test
+```
+
+Uses the built-in Node test runner; covers OCR field extraction, compliance scoring, and SSRF URL checks. No network needed.
+
 ## Run frontend (dev)
 ```
 cd frontend

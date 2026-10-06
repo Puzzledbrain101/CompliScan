@@ -18,14 +18,8 @@ export default function ComplianceApp() {
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState(null);
   const [selectedSubmission, setSelectedSubmission] = useState(null);
-  const [logs, setLogs] = useState(() => {
-    try {
-      const savedLogs = localStorage.getItem('compliscan_submissions');
-      return savedLogs ? JSON.parse(savedLogs) : [];
-    } catch (error) {
-      return [];
-    }
-  });
+  const [logs, setLogs] = useState([]);
+  const [historyError, setHistoryError] = useState(null);
   const [trendData, setTrendData] = useState([]);
   const [brandViolations, setBrandViolations] = useState([]);
   const [analyticsLoading, setAnalyticsLoading] = useState(false);
@@ -37,14 +31,19 @@ export default function ComplianceApp() {
   // API Base URL - set VITE_API_BASE_URL to point at another backend
   const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'https://compliscan-backend.onrender.com';
 
-  // Save submissions to localStorage whenever logs change
-  useEffect(() => {
+  // Load submission history from the backend
+  async function fetchHistory() {
+    setHistoryError(null);
     try {
-      localStorage.setItem('compliscan_submissions', JSON.stringify(logs));
-    } catch (error) {
-      // ignore
+      const r = await fetch(`${API_BASE_URL}/api/submissions?limit=50`);
+      if (!r.ok) throw new Error(`/api/submissions returned ${r.status}`);
+      const data = await r.json();
+      setLogs(Array.isArray(data.submissions) ? data.submissions : []);
+    } catch (err) {
+      console.error('History fetch error:', err);
+      setHistoryError('Failed to load submission history');
     }
-  }, [logs]);
+  }
 
   // Function to call the backend API
   async function callBackendAPI({ type, file, url }) {
@@ -131,7 +130,7 @@ export default function ComplianceApp() {
         setSubmitting(false);
         return;
       }
-      const log = toLog(await callBackendAPI({ type: 'url', url }), 'link');
+      const log = toLog(await callBackendAPI({ type: 'url', url }), 'url');
       setResult(log);
       setLogs((s) => [log, ...s]);
     } catch (err) {
@@ -189,6 +188,7 @@ export default function ComplianceApp() {
   // Fetch analytics on mount and after every scan
   useEffect(() => {
     fetchAnalytics();
+    fetchHistory();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -472,6 +472,14 @@ export default function ComplianceApp() {
                           <span className="font-medium text-gray-600">Country of Origin:</span>
                           <span className="text-gray-800">{result.parsed?.country_of_origin || '❌ Missing'}</span>
                         </div>
+                        <div className="flex justify-between py-2 border-b border-gray-100">
+                          <span className="font-medium text-gray-600">Consumer Care:</span>
+                          <span className="text-gray-800">{result.parsed?.consumer_care || (result.input_type === 'url' ? 'Not on listing' : '❌ Missing')}</span>
+                        </div>
+                        <div className="flex justify-between py-2 border-b border-gray-100">
+                          <span className="font-medium text-gray-600">Date of Manufacture:</span>
+                          <span className="text-gray-800">{result.parsed?.date_of_manufacture || (result.input_type === 'url' ? 'Not on listing' : '❌ Missing')}</span>
+                        </div>
                         {result.parsed?.ai_enhanced && (
                           <div className="flex justify-between py-2 border-b border-gray-100">
                             <span className="font-medium text-purple-600">AI Enhanced:</span>
@@ -671,21 +679,16 @@ export default function ComplianceApp() {
                 <span className="mr-2">📋</span>
                 Submission History ({logs.length})
               </h3>
-              {logs.length > 0 && (
-                <button
-                  onClick={() => {
-                    if (confirm('Clear all submission history? This cannot be undone.')) {
-                      setLogs([]);
-                      setResult(null);
-                      setSelectedSubmission(null);
-                    }
-                  }}
-                  className="text-xs text-red-600 hover:text-red-800 underline"
-                >
-                  Clear All
-                </button>
-              )}
+              <button
+                onClick={fetchHistory}
+                className="text-xs text-blue-600 hover:text-blue-800 underline"
+              >
+                Refresh
+              </button>
             </div>
+            {historyError && (
+              <p className="text-sm text-red-500 mb-3">{historyError}</p>
+            )}
             {logs.length > 0 ? 
               <div className="space-y-3 max-h-96 overflow-y-auto">
                 {logs.map((log) => (
