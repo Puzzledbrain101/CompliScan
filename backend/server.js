@@ -60,6 +60,7 @@ const DEFAULT_CORS_ORIGINS = [
   'https://compliscan-swayam-shahs-projects-9ce01a2a.vercel.app',
   'http://localhost:3000',
   'http://localhost:5000',
+  'http://localhost:5173',
   'https://localhost:5000'
 ];
 const corsOptions = {
