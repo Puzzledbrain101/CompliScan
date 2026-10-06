@@ -34,8 +34,8 @@ export default function ComplianceApp() {
   const fileInputRef = useRef();
   const linkInputRef = useRef();
 
-  // API Base URL - Updated for production
-  const API_BASE_URL = 'https://compliscan-backend.onrender.com';
+  // API Base URL - set VITE_API_BASE_URL to point at another backend
+  const API_BASE_URL = import.meta.env.VITE_API_BASE_URL ?? 'https://compliscan-backend.onrender.com';
 
   // Save submissions to localStorage whenever logs change
   useEffect(() => {
@@ -145,11 +145,16 @@ export default function ComplianceApp() {
   async function fetchAnalytics() {
     setAnalyticsLoading(true);
     setAnalyticsError(null);
+    const getJson = async (path) => {
+      const r = await fetch(`${API_BASE_URL}${path}`);
+      if (!r.ok) throw new Error(`${path} returned ${r.status}`);
+      return r.json();
+    };
     try {
       const [trendRes, brandsRes, statsRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/analytics/trend`).then(r => r.json()),
-        fetch(`${API_BASE_URL}/api/analytics/brands`).then(r => r.json()),
-        fetch(`${API_BASE_URL}/api/analytics/stats`).then(r => r.json())
+        getJson('/api/analytics/trend'),
+        getJson('/api/analytics/brands'),
+        getJson('/api/analytics/stats')
       ]);
       
       // Transform trend data for the chart
@@ -174,26 +179,8 @@ export default function ComplianceApp() {
     } catch (err) {
       console.error('Analytics fetch error:', err);
       setAnalyticsError('Failed to load analytics');
-      
-      // Fallback to mock data if API fails
-      const mockTrendData = [
-        { x: 'Day 1', compliance: 85, date: '2023-05-01', submissions: 5 },
-        { x: 'Day 2', compliance: 78, date: '2023-05-02', submissions: 3 },
-        { x: 'Day 3', compliance: 92, date: '2023-05-03', submissions: 7 },
-        { x: 'Day 4', compliance: 88, date: '2023-05-04', submissions: 4 },
-        { x: 'Day 5', compliance: 95, date: '2023-05-05', submissions: 6 }
-      ];
-      
-      const mockBrandViolations = [
-        { brand: 'Brand A', violations: 12, submissions: 8, avg_score: 75 },
-        { brand: 'Brand B', violations: 8, submissions: 5, avg_score: 82 },
-        { brand: 'Brand C', violations: 15, submissions: 10, avg_score: 68 },
-        { brand: 'Brand D', violations: 5, submissions: 3, avg_score: 88 },
-        { brand: 'Brand E', violations: 10, submissions: 7, avg_score: 72 }
-      ];
-      
-      setTrendData(mockTrendData);
-      setBrandViolations(mockBrandViolations);
+      setTrendData([]);
+      setBrandViolations([]);
     } finally {
       setAnalyticsLoading(false);
     }

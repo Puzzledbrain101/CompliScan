@@ -8,7 +8,8 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
 const mimeTypes = require('mime-types');
-const dns = require('dns').promises;
+const dns = require('dns');
+const net = require('net');
 const fs = require('fs').promises;
 const path = require('path');
 const cors = require('cors');
@@ -52,17 +53,20 @@ const app = express();
 // Trust proxy when behind reverse proxy (Replit environment)
 app.set('trust proxy', 1);
 
-// SIMPLE AND RELIABLE CORS CONFIGURATION
+// CORS: comma-separated CORS_ORIGINS overrides the default allow-list
+const DEFAULT_CORS_ORIGINS = [
+  'https://compliscan-blond.vercel.app',
+  'https://compliscan-o505uw4t9-swayam-shahs-projects-9ce01a2a.vercel.app',
+  'https://compliscan-79jw4lod7-swayam-shahs-projects-9ce01a2a.vercel.app',
+  'https://compliscan-swayam-shahs-projects-9ce01a2a.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:5000',
+  'https://localhost:5000'
+];
 const corsOptions = {
-  origin: [
-    'https://compliscan-blond.vercel.app',
-    'https://compliscan-o505uw4t9-swayam-shahs-projects-9ce01a2a.vercel.app',
-    'https://compliscan-79jw4lod7-swayam-shahs-projects-9ce01a2a.vercel.app',
-    'https://compliscan-swayam-shahs-projects-9ce01a2a.vercel.app',
-    'http://localhost:3000',
-    'http://localhost:5000',
-    'https://localhost:5000'
-  ],
+  origin: process.env.CORS_ORIGINS
+    ? process.env.CORS_ORIGINS.split(',').map(o => o.trim()).filter(Boolean)
+    : DEFAULT_CORS_ORIGINS,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
@@ -118,61 +122,84 @@ app.use('/api/check', checkLimiter);
 app.use(express.json({ limit: '10mb' })); // Prevent large JSON payloads
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-// Enhanced URL validation to prevent SSRF with DNS resolution checks
+// True for loopback, private, link-local, CGNAT, multicast and other
+// non-public addresses (IPv4, IPv6, and IPv4-mapped IPv6)
+function isBlockedAddress(ip) {
+  if (net.isIPv4(ip)) {
+    const [a, b] = ip.split('.').map(Number);
+    return a === 0 || a === 10 || a === 127 || a >= 224 ||
+      (a === 100 && b >= 64 && b <= 127) ||  // CGNAT
+      (a === 169 && b === 254) ||            // link-local / cloud metadata
+      (a === 172 && b >= 16 && b <= 31) ||
+      (a === 192 && b === 168) ||
+      (a === 192 && b === 0) ||
+      (a === 198 && (b === 18 || b === 19));
+  }
+  if (net.isIPv6(ip)) {
+    const addr = ip.toLowerCase();
+    const mapped = addr.match(/^::ffff:(?:0:)?(\d+\.\d+\.\d+\.\d+)$/);
+    if (mapped) return isBlockedAddress(mapped[1]);
+    const mappedHex = addr.match(/^::ffff:(?:0:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
+    if (mappedHex) {
+      const hi = parseInt(mappedHex[1], 16);
+      const lo = parseInt(mappedHex[2], 16);
+      return isBlockedAddress(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
+    }
+    return addr === '::' || addr === '::1' ||
+      /^f[cd]/.test(addr) ||       // unique local fc00::/7
+      /^fe[89ab]/.test(addr) ||    // link-local fe80::/10
+      /^ff/.test(addr);            // multicast
+  }
+  return true; // not an IP at all
+}
+
+// dns.lookup replacement used for outbound requests: re-checks the address
+// actually being connected to, so DNS rebinding cannot reach internal hosts
+function safeLookup(hostname, options, callback) {
+  dns.lookup(hostname, options, (err, address, family) => {
+    if (err) return callback(err);
+    const addresses = Array.isArray(address) ? address.map(a => a.address) : [address];
+    if (addresses.some(isBlockedAddress)) {
+      return callback(new Error('URL validation failed: domain resolves to a private IP address'));
+    }
+    callback(null, address, family);
+  });
+}
+
+// Validate a URL before fetching it to prevent SSRF
 async function validateUrl(url) {
   try {
     const parsedUrl = new URL(url);
-    
+
     // Only allow http and https protocols
     if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
       throw new Error('Only HTTP and HTTPS protocols are allowed');
     }
-    
-    const hostname = parsedUrl.hostname.toLowerCase();
-    
-    // Block private IP ranges and localhost (initial check)
-    const privatePatterns = [
-      /^127\./, // 127.x.x.x (localhost)
-      /^10\./, // 10.x.x.x (private)
-      /^172\.(1[6-9]|2[0-9]|3[0-1])\./, // 172.16.x.x - 172.31.x.x (private)
-      /^192\.168\./, // 192.168.x.x (private)
-      /^169\.254\./, // 169.254.x.x (link-local)
-      /^::1$/, // IPv6 localhost
-      /^fc00:/, // IPv6 private
-      /^fe80:/, // IPv6 link-local
-      /localhost/i,
-      /\.local$/i,
-      /^metadata\./, // AWS metadata
-      /^169\.254\.169\.254$/, // AWS metadata IP
-    ];
-    
-    if (privatePatterns.some(pattern => pattern.test(hostname))) {
-      throw new Error('Access to private IP ranges is not allowed');
+
+    // URL hostnames keep brackets around IPv6 literals
+    const hostname = parsedUrl.hostname.toLowerCase().replace(/^\[|\]$/g, '');
+
+    if (net.isIP(hostname)) {
+      if (isBlockedAddress(hostname)) {
+        throw new Error('Access to private IP ranges is not allowed');
+      }
+      return true;
     }
-    
-    // DNS resolution check to prevent DNS rebinding attacks
+
+    if (hostname === 'localhost' || /\.(localhost|local|internal)$/.test(hostname)) {
+      throw new Error('Access to internal hostnames is not allowed');
+    }
+
+    let addresses;
     try {
-      const addresses = await dns.resolve4(hostname).catch(() => []);
-      const addresses6 = await dns.resolve6(hostname).catch(() => []);
-      const allAddresses = [...addresses, ...addresses6];
-      
-      for (const addr of allAddresses) {
-        if (privatePatterns.some(pattern => pattern.test(addr))) {
-          throw new Error('Domain resolves to private IP address');
-        }
-        // Additional specific IP blocks
-        if (addr.startsWith('0.') || addr === '255.255.255.255') {
-          throw new Error('Invalid IP address range');
-        }
-      }
+      addresses = await dns.promises.lookup(hostname, { all: true });
     } catch (dnsError) {
-      if (dnsError.message.includes('private IP') || dnsError.message.includes('Invalid IP')) {
-        throw dnsError;
-      }
-      // DNS resolution failed, allow but log
-      console.warn(`DNS resolution failed for ${hostname}: ${dnsError.message}`);
+      throw new Error(`Could not resolve host ${hostname}`);
     }
-    
+    if (addresses.some(a => isBlockedAddress(a.address))) {
+      throw new Error('Domain resolves to private IP address');
+    }
+
     return true;
   } catch (error) {
     throw new Error(`URL validation failed: ${error.message}`);
@@ -497,15 +524,28 @@ async function scrapeProduct(url) {
   }
   
   
-  const { data } = await axios.get(url, { 
-    timeout: (isFlipkart || isMyntra) ? 15000 : 8000, // Longer timeout for problematic sites
-    maxContentLength: 3 * 1024 * 1024, // 3MB limit
-    maxRedirects: 3,
-    headers,
-    validateStatus: function (status) {
-      return status >= 200 && status < 400; // Accept 2xx and 3xx status codes
-    }
-  });
+  // Follow redirects manually so every hop goes through validateUrl
+  const MAX_REDIRECTS = 3;
+  let currentUrl = url;
+  let response;
+  for (let hop = 0; ; hop++) {
+    response = await axios.get(currentUrl, {
+      timeout: (isFlipkart || isMyntra) ? 15000 : 8000, // Longer timeout for problematic sites
+      maxContentLength: 3 * 1024 * 1024, // 3MB limit
+      maxRedirects: 0,
+      lookup: safeLookup,
+      headers,
+      validateStatus: function (status) {
+        return status >= 200 && status < 400; // Accept 2xx and 3xx status codes
+      }
+    });
+    const location = response.headers.location;
+    if (response.status < 300 || !location) break;
+    if (hop >= MAX_REDIRECTS) throw new Error('Too many redirects');
+    currentUrl = new URL(location, currentUrl).toString();
+    await validateUrl(currentUrl);
+  }
+  const { data } = response;
   
   // Debug logging for problematic sites
   if (isMyntra && data.includes('Something went wrong')) {
@@ -978,29 +1018,14 @@ app.get('/api/analytics/trend', async (req, res) => {
     const { days = 30, user_id = 'demo_user' } = req.query;
     const trendData = await operations.getComplianceTrend(user_id, parseInt(days));
     
-    // Transform for recharts format - ensure we have data for all days
-    const formatted = trendData.map((item, index) => ({
-      x: `Day ${index + 1}`,
+    // Transform for recharts format
+    const formatted = trendData.map((item) => ({
+      x: item.date,
       compliance: Math.round(item.avg_score || 0),
       date: item.date,
       submissions: item.submissions || 0
     }));
-    
-    // If no data, return some sample data for the demo
-    if (formatted.length === 0) {
-      const today = new Date();
-      for (let i = 29; i >= 0; i--) {
-        const date = new Date(today);
-        date.setDate(date.getDate() - i);
-        formatted.push({
-          x: `Day ${30 - i}`,
-          compliance: Math.floor(Math.random() * 30) + 70, // Random between 70-100
-          date: date.toISOString().split('T')[0],
-          submissions: Math.floor(Math.random() * 5) + 1
-        });
-      }
-    }
-    
+
     res.json(formatted);
   } catch (error) {
     console.error('Failed to get trend data:', error);
@@ -1020,18 +1045,7 @@ app.get('/api/analytics/brands', async (req, res) => {
       submissions: item.total_submissions || 0,
       avg_score: Math.round(item.avg_score || 0)
     }));
-    
-    // If no data, return some sample data for the demo
-    if (formatted.length === 0) {
-      const sampleBrands = ['Brand A', 'Brand B', 'Brand C', 'Brand D', 'Brand E'];
-      formatted.push(...sampleBrands.map((brand, index) => ({
-        brand,
-        violations: Math.floor(Math.random() * 15) + 5,
-        submissions: Math.floor(Math.random() * 10) + 3,
-        avg_score: Math.floor(Math.random() * 30) + 65
-      })));
-    }
-    
+
     res.json(formatted);
   } catch (error) {
     console.error('Failed to get brand data:', error);
