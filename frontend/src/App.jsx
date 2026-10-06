@@ -3,9 +3,13 @@ import Scanner from './components/Scanner.jsx';
 import ResultPanel from './components/ResultPanel.jsx';
 import Analytics from './components/Analytics.jsx';
 import History from './components/History.jsx';
+import BookmarkletCard from './components/BookmarkletCard.jsx';
 import { ShieldCheck } from './components/icons.jsx';
 import { getAnalytics, getHistory, runCheck } from './lib/api.js';
 import { statusOf, toEntry } from './lib/results.js';
+import { clearHandoffParam, isHandoffLaunch, listenForPage } from './lib/handoff.js';
+
+const HANDOFF_TIMEOUT_MS = 15000;
 
 export default function App() {
   const [scan, setScan] = useState({ state: 'idle' }); // idle | loading | error
@@ -39,6 +43,27 @@ export default function App() {
     loadHistory();
     loadAnalytics();
   }, [loadHistory, loadAnalytics]);
+
+  // Opened by the bookmarklet: wait for the store page it sends
+  useEffect(() => {
+    if (!isHandoffLaunch()) return;
+    setScan({ state: 'loading', kind: 'page' });
+    const timer = setTimeout(() => {
+      stopListening();
+      clearHandoffParam();
+      setScan({ state: 'error', message: 'No page arrived from the store tab. Go back to the product page and click the bookmark again.' });
+    }, HANDOFF_TIMEOUT_MS);
+    const stopListening = listenForPage(({ url, html }) => {
+      clearTimeout(timer);
+      clearHandoffParam();
+      handleCheck({ kind: 'page', url, html });
+    });
+    return () => {
+      clearTimeout(timer);
+      stopListening();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Bring the result panel into view when its top is off screen (below the
   // form on narrow screens, or above the history list on any screen)
@@ -89,7 +114,10 @@ export default function App() {
 
       <main className="main">
         <div className="workspace">
-          <Scanner busy={scan.state === 'loading'} onCheck={handleCheck} />
+          <div className="sidebar">
+            <Scanner busy={scan.state === 'loading'} onCheck={handleCheck} />
+            <BookmarkletCard />
+          </div>
           <ResultPanel
             ref={resultRef}
             scan={scan}

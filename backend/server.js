@@ -6,7 +6,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
 const mimeTypes = require('mime-types');
-const { scrapeProduct } = require('./scrapers');
+const { scrapeProduct, extractProductFields } = require('./scrapers');
 const fs = require('fs').promises;
 const path = require('path');
 const cors = require('cors');
@@ -104,6 +104,7 @@ const checkLimiter = rateLimit({
 
 app.use(limiter);
 app.use('/api/check', checkLimiter);
+app.use('/api/check-page', checkLimiter);
 
 app.use(express.json({ limit: '10mb' })); // Prevent large JSON payloads
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
@@ -133,6 +134,137 @@ function sanitizeError(error, isProduction = process.env.NODE_ENV === 'productio
   }
   // In development, return the actual error (but still sanitize sensitive info)
   return error.message.replace(/file:\/\/[^\s]+/g, '[FILE_PATH]').replace(/https?:\/\/[^\s]+/g, '[URL]');
+}
+
+// Score parsed fields against the Legal Metrology schema, store the result,
+// and build the response shared by every check endpoint
+async function scoreAndStore(parsed, { inputType, inputSource, startTime }) {
+  // Required fields and scoring live in schema.js (createNormalizedLabel)
+  const isImageSource = parsed._ocr_source === 'image';
+
+  const reasons = [];
+  if (parsed._ocr_confidence && parsed._ocr_confidence < 0.6) {
+    reasons.push('Low OCR confidence');
+  }
+  if (parsed._image_resolution && 
+      (parsed._image_resolution.width < 400 || parsed._image_resolution.height < 300)) {
+    reasons.push('Low image resolution');
+  }
+
+  // Create normalized label using schema
+  const normalizedLabel = createNormalizedLabel(parsed, {
+    source: isImageSource ? 'image' : 'url',
+    fieldConfidences: parsed._field_confidences || {},
+    ocrConfidence: parsed._ocr_confidence || 0,
+    imageResolution: parsed._image_resolution,
+    extractedText: parsed._extracted_text,
+    debugInfo: { 
+      inputType,
+      source: inputSource || 'N/A'
+    }
+  });
+
+  // Validate normalized label structure
+  const validation = validateLabel(normalizedLabel);
+  if (!validation.valid && process.env.NODE_ENV !== 'production') {
+    console.warn('Schema validation errors:', validation.errors);
+  }
+
+  // Add legacy compatibility fields for frontend
+  const log = {
+    id: `check_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+    parsed: {
+      product_name: normalizedLabel.product_name,
+      MRP: normalizedLabel.MRP,
+      manufacturer: normalizedLabel.manufacturer,
+      net_quantity: normalizedLabel.net_quantity,
+      country_of_origin: normalizedLabel.country_of_origin,
+      consumer_care: normalizedLabel.consumer_care,
+      date_of_manufacture: normalizedLabel.date_of_manufacture,
+      _ocr_confidence: normalizedLabel._ocr_confidence,
+      _image_resolution: normalizedLabel._image_resolution,
+      _field_confidences: normalizedLabel._field_confidences
+    },
+    compliance_score: normalizedLabel.compliance_score,
+    status: normalizedLabel.status,
+    violations: normalizedLabel.violations.map(v => v.message),
+    unverifiable: normalizedLabel.unverifiable_fields.map(u => u.message),
+    issues: normalizedLabel.violations, // { field, type, severity, message }
+    unverifiable_fields: normalizedLabel.unverifiable_fields, // { field, message }
+    reasons: reasons, // Keep quality reasons separate
+    timestamp: normalizedLabel._timestamp,
+    // Include full normalized data for future use
+    _normalized: normalizedLabel
+  };
+
+  // Store submission in database
+  try {
+    const submissionData = {
+      id: log.id,
+      user_id: 'demo_user',
+      product_name: normalizedLabel.product_name,
+      input_type: inputType,
+      input_source: inputSource || null,
+      
+      // Legal Metrology fields
+      manufacturer: normalizedLabel.manufacturer,
+      net_quantity: normalizedLabel.net_quantity,
+      mrp: normalizedLabel.MRP,
+      consumer_care: normalizedLabel.consumer_care,
+      date_of_manufacture: normalizedLabel.date_of_manufacture,
+      country_of_origin: normalizedLabel.country_of_origin,
+      
+      // Compliance results
+      compliance_score: normalizedLabel.compliance_score,
+      status: ['approved', 'failed', 'needs_review'].includes(normalizedLabel.status) 
+        ? normalizedLabel.status 
+        : 'needs_review', // Default fallback for unknown status
+      
+      // Technical metadata
+      ocr_confidence: normalizedLabel._ocr_confidence,
+      image_width: normalizedLabel._image_resolution?.width,
+      image_height: normalizedLabel._image_resolution?.height,
+      processing_time_ms: Date.now() - startTime,
+      
+      // Raw data
+      raw_data: normalizedLabel,
+      field_confidences: normalizedLabel._field_confidences,
+      extracted_text: normalizedLabel._extracted_text
+    };
+
+    // Store submission (await here!)
+    await operations.insertSubmission(submissionData);
+
+    // Store violations separately
+    if (normalizedLabel.violations && normalizedLabel.violations.length > 0) {
+      await operations.insertViolations(log.id, normalizedLabel.violations);
+    }
+
+    console.log('Submission stored in database:', log.id);
+  } catch (dbError) {
+    console.error('Failed to store submission in database:', dbError);
+    // Continue without failing the request - database storage is not critical for immediate response
+  }
+
+  return log;
+}
+
+function sendCheckError(res, err) {
+  console.error('Compliance check error:', {
+    message: err.message,
+    stack: process.env.NODE_ENV !== 'production' ? err.stack : undefined,
+    timestamp: new Date().toISOString()
+  });
+
+  // Scraper errors carry a message written for the user
+  const sanitizedError = err.expose ? err.message : sanitizeError(err);
+  const statusCode = err.expose ? err.status
+    : err.message.includes('validation') || err.message.includes('Invalid') ? 400 : 500;
+
+  res.status(statusCode).json({
+    error: sanitizedError,
+    timestamp: new Date().toISOString()
+  });
 }
 
 app.post('/api/check', 
@@ -193,144 +325,61 @@ app.post('/api/check',
         parsed = await processLabelImage(imageFile.path);
       }
 
-      // Required fields and scoring live in schema.js (createNormalizedLabel)
-      const isImageSource = parsed._ocr_source === 'image';
-
-      const reasons = [];
-      if (parsed._ocr_confidence && parsed._ocr_confidence < 0.6) {
-        reasons.push('Low OCR confidence');
-      }
-      if (parsed._image_resolution && 
-          (parsed._image_resolution.width < 400 || parsed._image_resolution.height < 300)) {
-        reasons.push('Low image resolution');
-      }
-
-      // Create normalized label using schema
-      const normalizedLabel = createNormalizedLabel(parsed, {
-        source: isImageSource ? 'image' : 'url',
-        fieldConfidences: parsed._field_confidences || {},
-        ocrConfidence: parsed._ocr_confidence || 0,
-        imageResolution: parsed._image_resolution,
-        extractedText: parsed._extracted_text,
-        debugInfo: { 
-          inputType: imageFile ? 'image' : 'url',
-          url: url || 'N/A',
-          fileName: imageFile?.originalname || 'N/A'
-        }
-      });
-
-      // Validate normalized label structure
-      const validation = validateLabel(normalizedLabel);
-      if (!validation.valid && process.env.NODE_ENV !== 'production') {
-        console.warn('Schema validation errors:', validation.errors);
-      }
-
-      // Add legacy compatibility fields for frontend
-      const log = {
-        id: `check_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        parsed: {
-          product_name: normalizedLabel.product_name,
-          MRP: normalizedLabel.MRP,
-          manufacturer: normalizedLabel.manufacturer,
-          net_quantity: normalizedLabel.net_quantity,
-          country_of_origin: normalizedLabel.country_of_origin,
-          consumer_care: normalizedLabel.consumer_care,
-          date_of_manufacture: normalizedLabel.date_of_manufacture,
-          _ocr_confidence: normalizedLabel._ocr_confidence,
-          _image_resolution: normalizedLabel._image_resolution,
-          _field_confidences: normalizedLabel._field_confidences
-        },
-        compliance_score: normalizedLabel.compliance_score,
-        status: normalizedLabel.status,
-        violations: normalizedLabel.violations.map(v => v.message),
-        unverifiable: normalizedLabel.unverifiable_fields.map(u => u.message),
-        issues: normalizedLabel.violations, // { field, type, severity, message }
-        unverifiable_fields: normalizedLabel.unverifiable_fields, // { field, message }
-        reasons: reasons, // Keep quality reasons separate
-        timestamp: normalizedLabel._timestamp,
-        // Include full normalized data for future use
-        _normalized: normalizedLabel
-      };
-
-      // Clean up uploaded file
+      // Clean up uploaded file before scoring
       if (uploadedFilePath) {
         await cleanupFile(uploadedFilePath);
+        uploadedFilePath = null;
       }
 
-      // Store submission in database
-      try {
-        const submissionData = {
-          id: log.id,
-          user_id: 'demo_user',
-          product_name: normalizedLabel.product_name,
-          input_type: req.file ? 'image' : 'url',
-          input_source: req.file ? req.file.originalname : (req.body.url || null),
-          
-          // Legal Metrology fields
-          manufacturer: normalizedLabel.manufacturer,
-          net_quantity: normalizedLabel.net_quantity,
-          mrp: normalizedLabel.MRP,
-          consumer_care: normalizedLabel.consumer_care,
-          date_of_manufacture: normalizedLabel.date_of_manufacture,
-          country_of_origin: normalizedLabel.country_of_origin,
-          
-          // Compliance results
-          compliance_score: normalizedLabel.compliance_score,
-          status: ['approved', 'failed', 'needs_review'].includes(normalizedLabel.status) 
-            ? normalizedLabel.status 
-            : 'needs_review', // Default fallback for unknown status
-          
-          // Technical metadata
-          ocr_confidence: normalizedLabel._ocr_confidence,
-          image_width: normalizedLabel._image_resolution?.width,
-          image_height: normalizedLabel._image_resolution?.height,
-          processing_time_ms: Date.now() - startTime,
-          
-          // Raw data
-          raw_data: normalizedLabel,
-          field_confidences: normalizedLabel._field_confidences,
-          extracted_text: normalizedLabel._extracted_text
-        };
-
-        // Store submission (await here!)
-        await operations.insertSubmission(submissionData);
-
-        // Store violations separately
-        if (normalizedLabel.violations && normalizedLabel.violations.length > 0) {
-          await operations.insertViolations(log.id, normalizedLabel.violations);
-        }
-
-        console.log('Submission stored in database:', log.id);
-      } catch (dbError) {
-        console.error('Failed to store submission in database:', dbError);
-        // Continue without failing the request - database storage is not critical for immediate response
-      }
-
-      return res.json(log);
+      return res.json(await scoreAndStore(parsed, {
+        inputType: imageFile ? 'image' : 'url',
+        inputSource: imageFile ? imageFile.originalname : url,
+        startTime
+      }));
     } catch (err) {
       // Clean up uploaded file on error
       if (uploadedFilePath) {
         await cleanupFile(uploadedFilePath);
       }
-      
-      console.error('Compliance check error:', {
-        message: err.message,
-        stack: process.env.NODE_ENV !== 'production' ? err.stack : undefined,
-        timestamp: new Date().toISOString()
-      });
-      
-      // Scraper errors carry a message written for the user
-      const sanitizedError = err.expose ? err.message : sanitizeError(err);
-      const statusCode = err.expose ? err.status
-        : err.message.includes('validation') || err.message.includes('Invalid') ? 400 : 500;
-      
-      res.status(statusCode).json({ 
-        error: sanitizedError,
-        timestamp: new Date().toISOString()
-      });
+      sendCheckError(res, err);
     }
   }
 );
+
+// Check a page the user already has open (sent by the CompliScan bookmarklet
+// via the web app). The browser did the fetching, so store bot walls don't
+// apply and content the user opened (e.g. popups) is included.
+const MAX_PAGE_HTML_CHARS = 8 * 1024 * 1024;
+
+app.post('/api/check-page', async (req, res) => {
+  const startTime = Date.now();
+  try {
+    const { url, html } = req.body || {};
+    if (typeof url !== 'string' || typeof html !== 'string') {
+      return res.status(400).json({ error: 'Send the page url and html.' });
+    }
+    let pageUrl;
+    try {
+      pageUrl = new URL(url.trim());
+    } catch {
+      return res.status(400).json({ error: 'The page address is not a valid URL.' });
+    }
+    if (!['http:', 'https:'].includes(pageUrl.protocol) || url.length > 2048) {
+      return res.status(400).json({ error: 'Only http and https pages can be checked.' });
+    }
+    if (html.length > MAX_PAGE_HTML_CHARS) {
+      return res.status(413).json({ error: 'This page is too large to check.' });
+    }
+    if (html.length < 200) {
+      return res.status(400).json({ error: 'The page looks empty. Wait for it to finish loading and try again.' });
+    }
+
+    const parsed = extractProductFields(html, pageUrl.toString());
+    return res.json(await scoreAndStore(parsed, { inputType: 'url', inputSource: pageUrl.toString(), startTime }));
+  } catch (err) {
+    sendCheckError(res, err);
+  }
+});
 
 // SQLite CURRENT_TIMESTAMP is UTC without a zone ("YYYY-MM-DD HH:MM:SS")
 function toIsoUtc(sqliteTimestamp) {

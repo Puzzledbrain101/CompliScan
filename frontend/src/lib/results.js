@@ -25,7 +25,7 @@ export function statusOf(status) {
 export function toEntry(result, input) {
   return {
     id: result.id,
-    input_type: input.kind,
+    input_type: input.kind === 'image' ? 'image' : 'url',
     input_source: input.kind === 'image' ? input.file.name : input.url,
     parsed: result.parsed || {},
     compliance_score: result.compliance_score ?? 0,
