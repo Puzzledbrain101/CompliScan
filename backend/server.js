@@ -18,18 +18,6 @@ const { processLabelImage } = require('./ocr-processor');
 const { createNormalizedLabel, validateLabel } = require('./schema');
 const { operations, initializeDatabase } = require('./database');
 
-// Initialize OpenAI client (optional - only if API key provided)
-// the newest OpenAI model is "gpt-5" which was released August 7, 2025. do not change this unless explicitly requested by the user
-const OpenAI = require('openai');
-let openai = null;
-
-if (process.env.OPENAI_API_KEY) {
-  openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  console.log('OpenAI client initialized successfully');
-} else {
-  console.log('OpenAI API key not provided. AI features will be disabled.');
-}
-
 // Configure secure file upload with limits
 const upload = multer({
   dest: 'uploads/',
@@ -243,108 +231,6 @@ function extractStructuredData($) {
   
   console.log('Structured data extracted:', Object.keys(data).filter(k => data[k]));
   return data;
-}
-
-// AI-powered field normalization and enhancement
-async function normalizeProductData(data) {
-  if (!openai || !process.env.OPENAI_API_KEY) {
-    console.log('OpenAI not configured, skipping AI normalization');
-    return { ...data, ai_confidence: 0 };
-  }
-
-  try {
-    const prompt = `Analyze and normalize this e-commerce product data. Extract missing fields, standardize units, and clean up the information. Return JSON with normalized data and confidence scores.
-
-Product Data:
-${JSON.stringify(data, null, 2)}
-
-Rules:
-1. Clean and standardize product names (remove excessive marketing text)
-2. Extract numeric MRP/price with currency (₹ for Indian sites)
-3. Standardize manufacturer/brand names (canonical forms)
-4. Normalize net_quantity with proper units (g, kg, ml, l, pieces)
-5. Standardize country_of_origin (full country names)
-6. Add confidence score (0-1) for each field
-
-Return JSON in this exact format:
-{
-  "product_name": "cleaned name",
-  "MRP": "₹amount",
-  "manufacturer": "Brand Name",
-  "net_quantity": "amount unit",
-  "country_of_origin": "Country Name",
-  "confidence": {
-    "product_name": 0.9,
-    "MRP": 0.8,
-    "manufacturer": 0.9,
-    "net_quantity": 0.7,
-    "country_of_origin": 0.6
-  },
-  "ai_enhanced": true
-}`;
-
-    const response = await openai.chat.completions.create({
-      model: "gpt-5",
-      messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" }
-    });
-
-    const aiResult = JSON.parse(response.choices[0].message.content);
-    
-    // Merge AI results with original data, preferring AI when confidence > 0.7
-    const normalized = { ...data };
-    for (const [key, value] of Object.entries(aiResult)) {
-      if (key === 'confidence' || key === 'ai_enhanced') continue;
-      if (value && (!data[key] || aiResult.confidence?.[key] > 0.7)) {
-        normalized[key] = value;
-      }
-    }
-    
-    normalized.ai_confidence = aiResult.confidence || {};
-    normalized.ai_enhanced = true;
-    
-    return normalized;
-  } catch (error) {
-    console.log('AI normalization failed:', error.message);
-    return { ...data, ai_confidence: {}, ai_enhanced: false };
-  }
-}
-
-// AI-powered compliance explanation generator
-async function generateComplianceExplanation(violations, productData) {
-  if (!openai || !process.env.OPENAI_API_KEY || violations.length === 0) {
-    return null;
-  }
-
-  try {
-    const prompt = `Generate clear, helpful explanations for Legal Metrology compliance violations. Make it easy to understand and actionable.
-
-Product: ${productData.product_name || 'Unknown Product'}
-Violations: ${violations.join(', ')}
-
-For each violation, explain:
-1. What's missing/wrong
-2. Why it's required by Indian Legal Metrology rules
-3. How to fix it (specific steps)
-
-Keep explanations under 120 words total. Be helpful, not technical. Return JSON format:
-{
-  "explanation": "Clear explanation of what's wrong and how to fix",
-  "severity": "low|medium|high",
-  "confidence": 0.9
-}`;
-
-    const response = await openai.chat.completions.create({
-      model: "gpt-5",
-      messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" }
-    });
-
-    return JSON.parse(response.choices[0].message.content);
-  } catch (error) {
-    console.log('AI explanation failed:', error.message);
-    return null;
-  }
 }
 
 // Enhanced generic extraction functions
@@ -640,18 +526,13 @@ async function scrapeProduct(url) {
   if (manufacturer && typeof manufacturer === 'string') manufacturer = manufacturer.substring(0, 100);
   if (country_of_origin && typeof country_of_origin === 'string') country_of_origin = country_of_origin.substring(0, 100);
   
-  let rawData = {
+  return {
     product_name,
     MRP: price,
     net_quantity,
     manufacturer,
     country_of_origin
   };
-
-  // Apply AI normalization for better data quality
-  const normalizedData = await normalizeProductData(rawData);
-  
-  return normalizedData;
 }
 
 app.post('/api/check', 
