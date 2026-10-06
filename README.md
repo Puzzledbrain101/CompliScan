@@ -1,11 +1,24 @@
 
-# Compliance Dashboard (Demo)
+# CompliScan
 
-This repository contains a demo frontend (React + Vite) and a simple Express backend to simulate:
-- Web scraping (product page)
-- OCR parsing (mocked)
-- Rule engine for Legal Metrology compliance checks
-- A small dashboard UI for seller and backend views
+Checks packaged products against India's Legal Metrology (Packaged Commodities) Rules, 2011.
+Upload a label photo or paste a product URL; CompliScan extracts the six mandatory declarations
+(manufacturer, net quantity, MRP, consumer care, date of manufacture, country of origin), scores
+compliance, and tracks results on a dashboard.
+
+- **Frontend**: React + Vite + Recharts (`frontend/`)
+- **Backend**: Express, Tesseract.js OCR (English + Hindi), Cheerio scraping, SQLite via built-in `node:sqlite` (`backend/`)
+
+Requires Node.js 22.13 or newer.
+
+## Run backend
+```
+cd backend
+npm install
+npm start
+```
+
+Runs on port 8000. The SQLite database is created at `backend/data/compliscan.db` on first start.
 
 ## Run frontend (dev)
 ```
@@ -14,18 +27,17 @@ npm install
 npm run dev
 ```
 
-Open the dev server (usually http://localhost:5173).
+Open http://localhost:5000.
 
-## Run backend
-```
-cd backend
-npm install
-node server.js
-```
+## API
+- `POST /api/check` - multipart `image` or JSON `{ "url": "..." }`; returns score, status, and violations
+- `GET /api/submissions`, `GET /api/submissions/:id` - check history
+- `GET /api/analytics/trend|brands|stats` - dashboard data
+- `GET /health`
 
-The backend exposes `POST /api/check` to accept multipart form data (`image`) or JSON body `url`.
+For URL checks, consumer care and date of manufacture are rarely shown on listings, so when missing
+they are reported as "not verifiable" rather than counted as violations.
 
-## Notes
-- Replace mocked OCR logic with Tesseract.js or Google Vision for real OCR.
-- Improve scraping logic per target sites and respect robots.txt.
-- Add persistent DB, auth, and production hardening for real use.
+## Environment
+- `OPENAI_API_KEY` (optional) - enables AI normalization of scraped fields
+- `NODE_ENV=production` - generic error messages, no debug fields in responses
