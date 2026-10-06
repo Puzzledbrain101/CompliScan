@@ -16,7 +16,7 @@ const cors = require('cors');
 // Import OCR processor and schema
 const { processLabelImage } = require('./ocr-processor');
 const { createNormalizedLabel, validateLabel } = require('./schema');
-const { operations } = require('./database');
+const { operations, initializeDatabase } = require('./database');
 
 // Initialize OpenAI client (optional - only if API key provided)
 // the newest OpenAI model is "gpt-5" which was released August 7, 2025. do not change this unless explicitly requested by the user
@@ -343,8 +343,7 @@ Return JSON in this exact format:
     const response = await openai.chat.completions.create({
       model: "gpt-5",
       messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
-      temperature: 0.3
+      response_format: { type: "json_object" }
     });
 
     const aiResult = JSON.parse(response.choices[0].message.content);
@@ -395,8 +394,7 @@ Keep explanations under 120 words total. Be helpful, not technical. Return JSON 
     const response = await openai.chat.completions.create({
       model: "gpt-5",
       messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
-      temperature: 0.4
+      response_format: { type: "json_object" }
     });
 
     return JSON.parse(response.choices[0].message.content);
@@ -639,33 +637,35 @@ async function scrapeProduct(url) {
                    
   } else if (isAmazon) {
     // Amazon-specific selectors
-    product_name = ($('#productTitle').text() ||
+    product_name = product_name || ($('#productTitle').text() ||
                    $('h1[data-automation-id="product-title"]').text() ||
                    $('h1').first().text()).trim() || null;
-    
-    price = ($('.a-price .a-offscreen').first().text() ||
-            $('.a-price-whole').first().text() + '.' + $('.a-price-fraction').first().text() ||
+
+    const priceWhole = $('.a-price-whole').first().text().replace(/\.$/, '');
+    const priceFraction = $('.a-price-fraction').first().text();
+    price = price || ($('.a-price .a-offscreen').first().text() ||
+            (priceWhole && (priceFraction ? `${priceWhole}.${priceFraction}` : priceWhole)) ||
             $('.a-price-range .a-price .a-offscreen').first().text() ||
             $('[class*="price"]').first().text()).trim() || null;
-    
+
     // Extract manufacturer from various Amazon-specific locations
-    manufacturer = ($('[data-feature-name="bylineInfo"] a').text() ||
+    manufacturer = manufacturer || ($('[data-feature-name="bylineInfo"] a').text() ||
                    $('.author .contributorNameID').text() ||
-                   'a[data-asin]:contains("Store")'.text().replace(/Visit the|Store/g, '').trim() ||
+                   $('a[data-asin]:contains("Store")').text().replace(/Visit the|Store/g, '').trim() ||
                    $('.po-brand .po-break-word').text() ||
                    $('#bylineInfo_feature_div a').text() ||
                    $('tr:contains("Brand") td').text() ||
                    $('th:contains("Brand")').next().text()).trim() || null;
-    
+
     // Extract quantity/weight from product details (Amazon-specific)
-    net_quantity = ($('tr:contains("Item Weight") td:last').text() ||
+    net_quantity = net_quantity || ($('tr:contains("Item Weight") td:last').text() ||
                    $('tr:contains("Package Weight") td:last').text() ||
                    $('tr:contains("Net Quantity") td:last').text() ||
                    $('.po-item_weight .po-break-word').text() ||
                    $('span:contains("g"), span:contains("kg"), span:contains("ml"), span:contains("l")').first().text()).trim() || null;
-    
+
     // Extract country from product details
-    country_of_origin = ($('tr:contains("Country of Origin") td').text() ||
+    country_of_origin = country_of_origin || ($('tr:contains("Country of Origin") td').text() ||
                         $('tr:contains("Made in") td').text() ||
                         $('.a-size-base:contains("Country")').parent().text()).trim() || null;
   } else {
@@ -756,46 +756,8 @@ app.post('/api/check',
         parsed = await processLabelImage(imageFile.path);
       }
 
-      // Rule engine with different requirements for URL vs Image processing
+      // Required fields and scoring live in schema.js (createNormalizedLabel)
       const isImageSource = parsed._ocr_source === 'image';
-      
-      // All 6 mandatory Legal Metrology fields for images, basic fields for URLs
-      const requiredForImages = [
-        'product_name',
-        'MRP', 
-        'manufacturer',
-        'net_quantity',
-        'country_of_origin',
-        'consumer_care',
-        'date_of_manufacture'
-      ];
-      
-      const requiredForUrls = [
-        'product_name',
-        'MRP', 
-        'manufacturer',
-        'net_quantity',
-        'country_of_origin'
-      ];
-      
-      const required = isImageSource ? requiredForImages : requiredForUrls;
-      const violations = [];
-      
-      const fieldNames = {
-        'product_name': 'Product Name',
-        'MRP': 'MRP (Retail Sale Price)',
-        'manufacturer': 'Manufacturer/Packer/Importer Name & Address',
-        'net_quantity': 'Net Quantity',
-        'country_of_origin': 'Country of Origin',
-        'consumer_care': 'Consumer Care Details',
-        'date_of_manufacture': 'Date of Manufacture/Import'
-      };
-      
-      required.forEach(k => { 
-        if (!parsed[k] || (typeof parsed[k] === 'string' && parsed[k].trim() === '')) {
-          violations.push(`${fieldNames[k]} missing`);
-        }
-      });
 
       const reasons = [];
       if (parsed._ocr_confidence && parsed._ocr_confidence < 0.6) {
@@ -844,6 +806,7 @@ app.post('/api/check',
         compliance_score: normalizedLabel.compliance_score,
         status: normalizedLabel.status,
         violations: normalizedLabel.violations.map(v => v.message),
+        unverifiable: normalizedLabel.unverifiable_fields.map(u => u.message),
         reasons: reasons, // Keep quality reasons separate
         timestamp: normalizedLabel._timestamp,
         // Include full normalized data for future use
@@ -1097,7 +1060,7 @@ app.get('/health', (req, res) => {
 });
 
 // 404 handler
-app.use('*', (req, res) => {
+app.use((req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
@@ -1117,8 +1080,15 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 8000;
-app.listen(PORT, () => {
-  console.log(`Server running on port ${PORT}`);
-  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log(`Security headers enabled: ${process.env.NODE_ENV === 'production' ? 'Yes' : 'Development mode'}`);
-});
+initializeDatabase()
+  .then(() => {
+    app.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+      console.log(`Security headers enabled: ${process.env.NODE_ENV === 'production' ? 'Yes' : 'Development mode'}`);
+    });
+  })
+  .catch((err) => {
+    console.error('Failed to initialize database, exiting:', err);
+    process.exit(1);
+  });

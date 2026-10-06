@@ -46,50 +46,6 @@ export default function ComplianceApp() {
     }
   }, [logs]);
 
-  // Mock rule engine run on parsed fields
- function runRuleEngine(parsed) {
-  // Check for both possible field name formats (backend might use different casing)
-  const productName = parsed.product_name || parsed.productName;
-  const mrp = parsed.MRP || parsed.mrp || parsed.price;
-  const manufacturer = parsed.manufacturer || parsed.brand;
-  const netQuantity = parsed.net_quantity || parsed.netQuantity || parsed.quantity;
-  const countryOfOrigin = parsed.country_of_origin || parsed.countryOfOrigin || parsed.origin;
-  
-  const required = [
-    { key: 'product_name', value: productName, name: 'Product Name' },
-    { key: 'MRP', value: mrp, name: 'MRP (Retail Sale Price)' },
-    { key: 'manufacturer', value: manufacturer, name: 'Manufacturer/Packer/Importer Name & Address' },
-    { key: 'net_quantity', value: netQuantity, name: 'Net Quantity' },
-    { key: 'country_of_origin', value: countryOfOrigin, name: 'Country of Origin' }
-  ];
-  
-  const violations = [];
-  required.forEach((field) => {
-    if (!field.value || (typeof field.value === 'string' && field.value.trim() === '')) {
-      violations.push(`${field.name} missing`);
-    }
-  });
-
-  // Simple OCR quality checks
-  const reasons = [];
-  const ocrConfidence = parsed._ocr_confidence || parsed.ocr_confidence || parsed.confidence;
-  const imageResolution = parsed._image_resolution || parsed.image_resolution;
-  
-  if (ocrConfidence && ocrConfidence < 0.6) reasons.push('Low OCR confidence (text unclear)');
-  if (imageResolution && (imageResolution.width < 400 || imageResolution.height < 300)) reasons.push('Low resolution image');
-
-  const score = Math.max(0, Math.round((1 - violations.length / required.length - (reasons.length * 0.05)) * 100));
-
-  const status = violations.length === 0 && reasons.length === 0 ? 'approved' : 
-                (reasons.length > 0 && violations.length === 0 ? 'rejected' : 'failed');
-
-  return {
-    compliance_score: score,
-    violations,
-    reasons,
-    status,
-  };
-}
   // Function to call the backend API
   async function callBackendAPI({ type, file, url }) {
     const backendUrl = `${API_BASE_URL}/api/check`;
@@ -107,11 +63,28 @@ export default function ComplianceApp() {
       method: 'POST',
       body: formData,
     });
+    const result = await response.json().catch(() => ({}));
     if (!response.ok) {
-      throw new Error(`Backend error: ${response.status}`);
+      throw new Error(result.error || `Backend error: ${response.status}`);
     }
-    const result = await response.json();
-    return result.parsed || result;
+    return result;
+  }
+
+  // Build a history entry from the backend's compliance result
+  function toLog(result, inputType) {
+    return {
+      id: result.id,
+      product_preview: result.parsed?.product_name || 'Unknown product',
+      input_type: inputType,
+      parsed: result.parsed || {},
+      compliance_score: result.compliance_score,
+      status: result.status,
+      violations: result.violations || [],
+      unverifiable: result.unverifiable || [],
+      reasons: result.reasons || [],
+      timestamp: result.timestamp || new Date().toISOString(),
+      highlight: result.status !== 'approved'
+    };
   }
 
   function handleSubmit(e) {
@@ -138,29 +111,11 @@ export default function ComplianceApp() {
         setSubmitting(false);
         return;
       }
-      const parsed = await callBackendAPI({ type: 'image', file });
-      const engine = runRuleEngine(parsed);
-      const log = {
-        id: `check_${Date.now()}`,
-        submitted_by: 'user',
-        product_preview: parsed.product_name || 'Unknown product',
-        input_type: 'image',
-        parsed,
-        ...engine,
-        timestamp: new Date().toISOString(),
-        highlight: engine.status === 'rejected' || engine.compliance_score < 100,
-        rules: {
-          rule1: Math.floor(Math.random() * 100),
-          rule2: Math.floor(Math.random() * 100),
-          rule3: Math.floor(Math.random() * 100),
-          rule4: Math.floor(Math.random() * 100),
-          rule5: Math.floor(Math.random() * 100)
-        }
-      };
+      const log = toLog(await callBackendAPI({ type: 'image', file }), 'image');
       setResult(log);
       setLogs((s) => [log, ...s]);
     } catch (err) {
-      setResult({ status: 'rejected', reason: err.message, violations: [], compliance_score: 0 });
+      setResult({ status: 'error', reason: err.message, violations: [], compliance_score: 0 });
     } finally {
       setSubmitting(false);
     }
@@ -176,29 +131,11 @@ export default function ComplianceApp() {
         setSubmitting(false);
         return;
       }
-      const parsed = await callBackendAPI({ type: 'url', url });
-      const engine = runRuleEngine(parsed);
-      const log = {
-        id: `check_${Date.now()}`,
-        submitted_by: 'user',
-        product_preview: parsed.product_name || 'Unknown product',
-        input_type: 'link',
-        parsed,
-        ...engine,
-        timestamp: new Date().toISOString(),
-        highlight: engine.status === 'rejected' || engine.compliance_score < 100,
-        rules: {
-          rule1: Math.floor(Math.random() * 100),
-          rule2: Math.floor(Math.random() * 100),
-          rule3: Math.floor(Math.random() * 100),
-          rule4: Math.floor(Math.random() * 100),
-          rule5: Math.floor(Math.random() * 100)
-        }
-      };
+      const log = toLog(await callBackendAPI({ type: 'url', url }), 'link');
       setResult(log);
       setLogs((s) => [log, ...s]);
     } catch (err) {
-      setResult({ status: 'rejected', reason: err.message, violations: [], compliance_score: 0 });
+      setResult({ status: 'error', reason: err.message, violations: [], compliance_score: 0 });
     } finally {
       setSubmitting(false);
     }
@@ -279,7 +216,7 @@ export default function ComplianceApp() {
   // Simple visual helpers
   function statusColor(status) {
     if (status === 'approved') return 'bg-green-100 text-green-800';
-    if (status === 'failed') return 'bg-yellow-100 text-yellow-800';
+    if (status === 'needs_review') return 'bg-yellow-100 text-yellow-800';
     return 'bg-red-100 text-red-800';
   }
 
@@ -429,7 +366,7 @@ export default function ComplianceApp() {
             </form>
 
             {/* Quick status summary in sidebar */}
-            {result && (
+            {result && result.status !== 'error' && (
               <div className="mt-6 pt-6 border-t border-gray-200">
                 <div className="flex items-center justify-between mb-3">
                   <h3 className="text-sm font-semibold text-gray-700">
@@ -446,16 +383,16 @@ export default function ComplianceApp() {
                 </div>
                 <div className={`p-4 rounded-lg ${
                   result.status === 'approved' ? 'bg-green-50 border border-green-200' : 
-                  result.status === 'failed' ? 'bg-yellow-50 border border-yellow-200' : 
+                  result.status === 'needs_review' ? 'bg-yellow-50 border border-yellow-200' : 
                   'bg-red-50 border border-red-200'
                 }`}>
                   <div className="flex items-center justify-between mb-2">
                     <span className={`font-semibold ${
                       result.status === 'approved' ? 'text-green-800' : 
-                      result.status === 'failed' ? 'text-yellow-800' : 'text-red-800'
+                      result.status === 'needs_review' ? 'text-yellow-800' : 'text-red-800'
                     }`}>
                       {result.status === 'approved' ? '✓ Compliant' : 
-                        result.status === 'failed' ? '⚠ Needs Review' : '✗ Non-Compliant'}
+                        result.status === 'needs_review' ? '⚠ Needs Review' : '✗ Non-Compliant'}
                     </span>
                     <span className="text-sm font-medium">{result.compliance_score}%</span>
                   </div>
@@ -479,7 +416,12 @@ export default function ComplianceApp() {
         <div className="col-span-2 md:col-span-3">
           {/* Scan/result area */}
           <div className="space-y-6">
-            {result ? (
+            {result?.status === 'error' ? (
+              <div className="bg-white rounded-xl shadow-lg p-6 border-l-4 border-red-500">
+                <h3 className="text-lg font-semibold text-red-800 mb-2">Scan failed</h3>
+                <p className="text-gray-600">{result.reason}</p>
+              </div>
+            ) : result ? (
               <>
                 {/* Status Header */}
                 <div className="bg-white rounded-xl shadow-lg p-6 border-l-4 border-emerald-500">
@@ -487,14 +429,14 @@ export default function ComplianceApp() {
                     <div className="flex items-center space-x-3">
                       <div className={`w-12 h-12 rounded-full flex items-center justify-center text-white text-xl font-bold ${
                         result.status === 'approved' ? 'bg-gradient-to-br from-emerald-500 to-green-600' : 
-                        result.status === 'failed' ? 'bg-gradient-to-br from-yellow-500 to-orange-600' : 'bg-gradient-to-br from-red-500 to-pink-600'
+                        result.status === 'needs_review' ? 'bg-gradient-to-br from-yellow-500 to-orange-600' : 'bg-gradient-to-br from-red-500 to-pink-600'
                       }`}>
-                        {result.status === 'approved' ? '✓' : result.status === 'failed' ? '⚠' : '✗'}
+                        {result.status === 'approved' ? '✓' : result.status === 'needs_review' ? '⚠' : '✗'}
                       </div>
                       <div>
                         <h3 className="text-xl font-bold text-gray-800">
                           {result.status === 'approved' ? '✅ Fully Compliant' : 
-                            result.status === 'failed' ? '⚠️ Needs Review' : '❌ Non-Compliant'}
+                            result.status === 'needs_review' ? '⚠️ Needs Review' : '❌ Non-Compliant'}
                         </h3>
                         <p className="text-gray-600">CompliScan Score: {result.compliance_score}%</p>
                       </div>
@@ -555,7 +497,7 @@ export default function ComplianceApp() {
                 </div>
 
                 {/* Violations & Issues */}
-                {(result.violations?.length > 0 || result.reasons?.length > 0) && (
+                {(result.violations?.length > 0 || result.unverifiable?.length > 0 || result.reasons?.length > 0) && (
                   <div className="bg-white rounded-xl shadow-lg overflow-hidden">
                     <div className="bg-gradient-to-r from-red-50 to-pink-50 px-6 py-4 border-b border-red-100">
                       <h4 className="text-lg font-semibold text-red-800 flex items-center">
@@ -572,6 +514,19 @@ export default function ComplianceApp() {
                               <li key={i} className="flex items-center space-x-2 text-red-600">
                                 <span className="w-2 h-2 bg-red-500 rounded-full"></span>
                                 <span>{violation}</span>
+                              </li>
+                            ))}
+                          </ul>
+                        </div>
+                      )}
+                      {result.unverifiable?.length > 0 && (
+                        <div>
+                          <h5 className="font-semibold text-gray-800 mb-2">Not Verifiable From Listing:</h5>
+                          <ul className="space-y-2">
+                            {result.unverifiable.map((note, i) => (
+                              <li key={i} className="flex items-center space-x-2 text-gray-600">
+                                <span className="w-2 h-2 bg-gray-400 rounded-full"></span>
+                                <span>{note}</span>
                               </li>
                             ))}
                           </ul>
