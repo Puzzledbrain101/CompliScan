@@ -8,8 +8,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
 const mimeTypes = require('mime-types');
-const dns = require('dns');
-const net = require('net');
+const { safeLookup, validateUrl } = require('./url-safety');
 const fs = require('fs').promises;
 const path = require('path');
 const cors = require('cors');
@@ -61,6 +60,7 @@ const DEFAULT_CORS_ORIGINS = [
   'https://compliscan-swayam-shahs-projects-9ce01a2a.vercel.app',
   'http://localhost:3000',
   'http://localhost:5000',
+  'http://localhost:5173',
   'https://localhost:5000'
 ];
 const corsOptions = {
@@ -121,90 +121,6 @@ app.use('/api/check', checkLimiter);
 
 app.use(express.json({ limit: '10mb' })); // Prevent large JSON payloads
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// True for loopback, private, link-local, CGNAT, multicast and other
-// non-public addresses (IPv4, IPv6, and IPv4-mapped IPv6)
-function isBlockedAddress(ip) {
-  if (net.isIPv4(ip)) {
-    const [a, b] = ip.split('.').map(Number);
-    return a === 0 || a === 10 || a === 127 || a >= 224 ||
-      (a === 100 && b >= 64 && b <= 127) ||  // CGNAT
-      (a === 169 && b === 254) ||            // link-local / cloud metadata
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 192 && b === 0) ||
-      (a === 198 && (b === 18 || b === 19));
-  }
-  if (net.isIPv6(ip)) {
-    const addr = ip.toLowerCase();
-    const mapped = addr.match(/^::ffff:(?:0:)?(\d+\.\d+\.\d+\.\d+)$/);
-    if (mapped) return isBlockedAddress(mapped[1]);
-    const mappedHex = addr.match(/^::ffff:(?:0:)?([0-9a-f]{1,4}):([0-9a-f]{1,4})$/);
-    if (mappedHex) {
-      const hi = parseInt(mappedHex[1], 16);
-      const lo = parseInt(mappedHex[2], 16);
-      return isBlockedAddress(`${hi >> 8}.${hi & 255}.${lo >> 8}.${lo & 255}`);
-    }
-    return addr === '::' || addr === '::1' ||
-      /^f[cd]/.test(addr) ||       // unique local fc00::/7
-      /^fe[89ab]/.test(addr) ||    // link-local fe80::/10
-      /^ff/.test(addr);            // multicast
-  }
-  return true; // not an IP at all
-}
-
-// dns.lookup replacement used for outbound requests: re-checks the address
-// actually being connected to, so DNS rebinding cannot reach internal hosts
-function safeLookup(hostname, options, callback) {
-  dns.lookup(hostname, options, (err, address, family) => {
-    if (err) return callback(err);
-    const addresses = Array.isArray(address) ? address.map(a => a.address) : [address];
-    if (addresses.some(isBlockedAddress)) {
-      return callback(new Error('URL validation failed: domain resolves to a private IP address'));
-    }
-    callback(null, address, family);
-  });
-}
-
-// Validate a URL before fetching it to prevent SSRF
-async function validateUrl(url) {
-  try {
-    const parsedUrl = new URL(url);
-
-    // Only allow http and https protocols
-    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-      throw new Error('Only HTTP and HTTPS protocols are allowed');
-    }
-
-    // URL hostnames keep brackets around IPv6 literals
-    const hostname = parsedUrl.hostname.toLowerCase().replace(/^\[|\]$/g, '');
-
-    if (net.isIP(hostname)) {
-      if (isBlockedAddress(hostname)) {
-        throw new Error('Access to private IP ranges is not allowed');
-      }
-      return true;
-    }
-
-    if (hostname === 'localhost' || /\.(localhost|local|internal)$/.test(hostname)) {
-      throw new Error('Access to internal hostnames is not allowed');
-    }
-
-    let addresses;
-    try {
-      addresses = await dns.promises.lookup(hostname, { all: true });
-    } catch (dnsError) {
-      throw new Error(`Could not resolve host ${hostname}`);
-    }
-    if (addresses.some(a => isBlockedAddress(a.address))) {
-      throw new Error('Domain resolves to private IP address');
-    }
-
-    return true;
-  } catch (error) {
-    throw new Error(`URL validation failed: ${error.message}`);
-  }
-}
 
 // Utility function to clean up uploaded files
 async function cleanupFile(filePath) {
@@ -931,39 +847,56 @@ app.post('/api/check',
   }
 );
 
+// SQLite CURRENT_TIMESTAMP is UTC without a zone ("YYYY-MM-DD HH:MM:SS")
+function toIsoUtc(sqliteTimestamp) {
+  if (!sqliteTimestamp) return null;
+  return sqliteTimestamp.includes('T') ? sqliteTimestamp : `${sqliteTimestamp.replace(' ', 'T')}Z`;
+}
+
+// Shape a stored submission like the /api/check response so the frontend
+// can render history entries and fresh results the same way
+function formatSubmission(sub) {
+  const raw = sub.raw_data || {};
+  return {
+    id: sub.id,
+    product_preview: sub.product_name || 'Unknown product',
+    input_type: sub.input_type,
+    input_source: sub.input_source,
+    parsed: {
+      product_name: sub.product_name,
+      MRP: raw.MRP,
+      manufacturer: raw.manufacturer,
+      net_quantity: raw.net_quantity,
+      country_of_origin: raw.country_of_origin,
+      consumer_care: raw.consumer_care,
+      date_of_manufacture: raw.date_of_manufacture,
+      _ocr_confidence: raw._ocr_confidence,
+      _image_resolution: raw._image_resolution,
+      _field_confidences: sub.field_confidences
+    },
+    compliance_score: sub.compliance_score,
+    status: sub.status,
+    violations: (raw.violations || []).map(v => v.message),
+    unverifiable: (raw.unverifiable_fields || []).map(u => u.message),
+    reasons: [],
+    timestamp: toIsoUtc(sub.created_at),
+    highlight: sub.status !== 'approved'
+  };
+}
+
 // Get submission history
 app.get('/api/submissions', async (req, res) => {
   try {
-    const { limit = 50, offset = 0, user_id = 'demo_user' } = req.query;
-    const submissions = await operations.getSubmissions(user_id, parseInt(limit), parseInt(offset));
-    // Transform for frontend compatibility
-    const formattedSubmissions = submissions.map(sub => ({
-      id: sub.id,
-      product_preview: sub.product_name || 'Unknown product',
-      input_type: sub.input_type,
-      parsed: {
-        product_name: sub.product_name,
-        MRP: sub.raw_data.MRP,
-        manufacturer: sub.raw_data.manufacturer,
-        net_quantity: sub.raw_data.net_quantity,
-        country_of_origin: sub.raw_data.country_of_origin,
-        consumer_care: sub.raw_data.consumer_care,
-        date_of_manufacture: sub.raw_data.date_of_manufacture,
-        _ocr_confidence: sub.raw_data._ocr_confidence,
-        _image_resolution: sub.raw_data._image_resolution,
-        _field_confidences: sub.field_confidences
-      },
-      compliance_score: sub.compliance_score,
-      status: sub.status,
-      violations: [], // Will be populated if needed
-      timestamp: sub.timestamp,
-      highlight: sub.status === 'failed' || sub.compliance_score < 100
-    }));
+    const { user_id = 'demo_user' } = req.query;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+    const submissions = await operations.getSubmissions(user_id, limit, offset);
+    const formattedSubmissions = submissions.map(formatSubmission);
 
     res.json({
       submissions: formattedSubmissions,
       total: formattedSubmissions.length,
-      has_more: formattedSubmissions.length === parseInt(limit)
+      has_more: formattedSubmissions.length === limit
     });
   } catch (error) {
     console.error('Failed to get submissions:', error);
@@ -978,34 +911,9 @@ app.get('/api/submissions/:id', async (req, res) => {
     if (!submission) {
       return res.status(404).json({ error: 'Submission not found' });
     }
-    // Fetch violations for this submission
-    const violations = await operations.getViolationsBySubmissionId(req.params.id);
+    const violationDetails = await operations.getViolationsBySubmissionId(req.params.id);
 
-    // Transform for frontend compatibility
-    const formatted = {
-      id: submission.id,
-      product_preview: submission.product_name || 'Unknown product',
-      input_type: submission.input_type,
-      parsed: {
-        product_name: submission.product_name,
-        MRP: submission.raw_data.MRP,
-        manufacturer: submission.raw_data.manufacturer,
-        net_quantity: submission.raw_data.net_quantity,
-        country_of_origin: submission.raw_data.country_of_origin,
-        consumer_care: submission.raw_data.consumer_care,
-        date_of_manufacture: submission.raw_data.date_of_manufacture,
-        _ocr_confidence: submission.raw_data._ocr_confidence,
-        _image_resolution: submission.raw_data._image_resolution,
-        _field_confidences: submission.field_confidences
-      },
-      compliance_score: submission.compliance_score,
-      status: submission.status,
-      violations: violations || [],
-      timestamp: submission.created_at,
-      highlight: submission.status === 'failed' || submission.compliance_score < 100
-    };
-
-    res.json(formatted);
+    res.json({ ...formatSubmission(submission), violation_details: violationDetails });
   } catch (error) {
     console.error('Failed to get submission:', error);
     res.status(500).json({ error: 'Failed to retrieve submission' });
