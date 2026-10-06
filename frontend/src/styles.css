@@ -207,10 +207,15 @@ svg {
     gap: 24px;
   }
 
-  .scanner {
+  .sidebar {
     position: sticky;
     top: 24px;
   }
+}
+
+.sidebar {
+  display: grid;
+  gap: 16px;
 }
 
 .section {
@@ -564,6 +569,69 @@ svg {
   font-size: 14px;
 }
 
+/* Bookmarklet: desktop browsers only (bookmarks bar + mouse) */
+
+.bookmarklet {
+  display: none;
+  gap: 14px;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .bookmarklet {
+    display: grid;
+  }
+}
+
+.bookmarklet-button {
+  display: inline-flex;
+  align-items: center;
+  justify-self: start;
+  gap: 8px;
+  height: 36px;
+  padding-inline: 14px;
+  border: 1.5px dashed var(--accent);
+  border-radius: 999px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-size: 14px;
+  font-weight: 600;
+  text-decoration: none;
+  cursor: grab;
+  user-select: none;
+  transition: transform 160ms var(--ease-out), background-color 150ms ease;
+}
+
+.bookmarklet-button:active {
+  cursor: grabbing;
+  transform: scale(0.97);
+}
+
+.steps {
+  display: grid;
+  gap: 8px;
+  padding-left: 20px;
+  list-style: decimal;
+  color: var(--text-2);
+  font-size: 13px;
+}
+
+.steps-hint {
+  display: block;
+  color: var(--text-3);
+}
+
+kbd {
+  display: inline-block;
+  min-width: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--border-strong);
+  border-bottom-width: 2px;
+  border-radius: 4px;
+  background: var(--surface);
+  font: 500 11px/18px var(--font);
+  text-align: center;
+}
+
 /* Result panel */
 
 .result-panel {
@@ -914,6 +982,13 @@ a.result-source:hover {
 
 .result-error .card-sub {
   margin-block: 4px 16px;
+}
+
+.result-error-tip {
+  padding: 10px 12px;
+  border-radius: var(--radius);
+  background: var(--accent-soft);
+  color: var(--text-2);
 }
 
 .result-error-icon {
