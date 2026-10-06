@@ -19,10 +19,22 @@ async function request(path, options) {
 }
 
 export function runCheck(input) {
+  // A page sent from the bookmarklet: the user's browser already fetched it
+  if (input.kind === 'page') {
+    return request('/api/check-page', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: input.url, html: input.html })
+    });
+  }
   const form = new FormData();
   if (input.kind === 'image') form.append('image', input.file);
   else form.append('url', input.url);
   return request('/api/check', { method: 'POST', body: form });
+}
+
+export function getCheck(id) {
+  return request(`/api/submissions/${encodeURIComponent(id)}`);
 }
 
 export async function getHistory(limit = 50) {

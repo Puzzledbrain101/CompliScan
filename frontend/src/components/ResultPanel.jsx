@@ -47,10 +47,10 @@ function LoadingState({ kind }) {
         <span className="spinner spinner-accent" aria-hidden="true" />
         <div>
           <p className="loading-title" role="status">
-            {kind === 'image' ? 'Reading the label…' : 'Fetching the product page…'}
+            {{ image: 'Reading the label…', page: 'Checking the page you sent…', saved: 'Opening the saved check…' }[kind] || 'Fetching the product page…'}
           </p>
           <p className="card-sub">
-            {kind === 'image' ? 'Text recognition usually takes 10–30 seconds.' : 'This takes a few seconds.'}
+            {{ image: 'Text recognition usually takes 10–30 seconds.', page: 'This takes a second.', saved: 'Just a moment.' }[kind] || 'This takes a few seconds.'}
           </p>
         </div>
       </div>
@@ -67,13 +67,18 @@ function LoadingState({ kind }) {
   );
 }
 
-function ErrorState({ message, onRetry }) {
+function ErrorState({ message, onRetry, blocked }) {
   return (
     <div className="result-error" role="alert">
       <span className="result-error-icon"><Alert /></span>
       <div>
         <h2 className="card-title">The check didn’t finish</h2>
         <p className="card-sub">{message}</p>
+        {blocked && (
+          <p className="card-sub result-error-tip">
+            Tip: open the product page yourself and use the <strong>CompliScan this page</strong> bookmark. It checks the page from your browser, so the store can’t block it.
+          </p>
+        )}
         {onRetry && (
           <button type="button" className="button button-secondary" onClick={onRetry}>
             Try again
@@ -156,7 +161,10 @@ function Result({ entry }) {
 const ResultPanel = forwardRef(function ResultPanel({ scan, entry, onRetry }, ref) {
   let content;
   if (scan.state === 'loading') content = <LoadingState kind={scan.kind} />;
-  else if (scan.state === 'error') content = <ErrorState message={scan.message} onRetry={onRetry} />;
+  else if (scan.state === 'error') {
+    const blocked = scan.input?.kind === 'url' && /blocked|bot check/i.test(scan.message || '');
+    content = <ErrorState message={scan.message} onRetry={onRetry} blocked={blocked} />;
+  }
   else if (entry) content = <Result key={entry.id} entry={entry} />;
   else content = <EmptyState />;
 

@@ -1,9 +1,9 @@
 /**
- * CompliScan Database Module - SQLite3 compatible version
+ * CompliScan Database Module - built-in node:sqlite (no native dependency)
  * SQLite database for persistent storage of submissions, violations, and metrics
  */
 
-const sqlite3 = require('sqlite3').verbose();
+const { DatabaseSync } = require('node:sqlite');
 const path = require('path');
 const fs = require('fs');
 
@@ -14,7 +14,7 @@ if (!fs.existsSync(dbDir)) {
 }
 
 const dbPath = path.join(dbDir, 'compliscan.db');
-const db = new sqlite3.Database(dbPath);
+const db = new DatabaseSync(dbPath);
 
 // Database Schema
 const schema = `
@@ -82,247 +82,180 @@ CREATE INDEX IF NOT EXISTS idx_submissions_user_id ON submissions(user_id);
 CREATE INDEX IF NOT EXISTS idx_violations_submission_id ON violations(submission_id);
 CREATE INDEX IF NOT EXISTS idx_violations_field_name ON violations(field_name);
 CREATE INDEX IF NOT EXISTS idx_violations_severity ON violations(severity);
+
+CREATE TABLE IF NOT EXISTS db_version (
+  version INTEGER PRIMARY KEY,
+  applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
+// node:sqlite cannot bind undefined, so map it to NULL
+const bind = (params) => params.map(p => (p === undefined ? null : p));
+
 // Initialize database schema
-function initializeDatabase() {
+async function initializeDatabase() {
   console.log('Initializing CompliScan database...');
+  db.exec(schema);
 
-  return new Promise((resolve, reject) => {
-    // Execute schema creation
-    db.exec(schema, (err) => {
-      if (err) {
-        console.error('Database initialization failed:', err);
-        reject(err);
-        return;
-      }
-
-      // Create version table
-      db.run(`
-        CREATE TABLE IF NOT EXISTS db_version (
-          version INTEGER PRIMARY KEY,
-          applied_at DATETIME DEFAULT CURRENT_TIMESTAMP
-        )
-      `, () => {
-        // Check current version
-        db.get('SELECT MAX(version) as version FROM db_version', (err, row) => {
-          if (err || !row || !row.version) {
-            db.run('INSERT INTO db_version (version) VALUES (1)', () => {
-              console.log('Database initialized with schema version 1');
-              resolve(true);
-            });
-          } else {
-            console.log('Database initialization completed successfully');
-            resolve(true);
-          }
-        });
-      });
-    });
-  });
+  const row = db.prepare('SELECT MAX(version) as version FROM db_version').get();
+  if (!row || !row.version) {
+    db.prepare('INSERT INTO db_version (version) VALUES (1)').run();
+    console.log('Database initialized with schema version 1');
+  } else {
+    console.log('Database initialization completed successfully');
+  }
+  return true;
 }
 
-// Database Operations with Promise wrappers
+function parseJsonColumns(row) {
+  return {
+    ...row,
+    raw_data: JSON.parse(row.raw_data || '{}'),
+    field_confidences: JSON.parse(row.field_confidences || '{}')
+  };
+}
+
+// Database operations (async so callers can await and catch errors uniformly)
 const operations = {
 
   // Store a new submission
-  insertSubmission(submissionData) {
-    return new Promise((resolve, reject) => {
-      const sql = `
-        INSERT INTO submissions (
-          id, user_id, product_name, input_type, input_source,
-          manufacturer, net_quantity, mrp, consumer_care, date_of_manufacture, country_of_origin,
-          compliance_score, status, ocr_confidence, image_width, image_height, processing_time_ms,
-          raw_data, field_confidences, extracted_text
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-      `;
-
-      const params = [
-        submissionData.id,
-        submissionData.user_id || 'demo_user',
-        submissionData.product_name,
-        submissionData.input_type,
-        submissionData.input_source,
-        submissionData.manufacturer,
-        submissionData.net_quantity,
-        submissionData.mrp,
-        submissionData.consumer_care,
-        submissionData.date_of_manufacture,
-        submissionData.country_of_origin,
-        submissionData.compliance_score,
-        submissionData.status,
-        submissionData.ocr_confidence,
-        submissionData.image_width,
-        submissionData.image_height,
-        submissionData.processing_time_ms,
-        JSON.stringify(submissionData.raw_data || {}),
-        JSON.stringify(submissionData.field_confidences || {}),
-        submissionData.extracted_text || ''
-      ];
-
-      db.run(sql, params, function(err) {
-        if (err) reject(err);
-        else resolve(this);
-      });
-    });
+  async insertSubmission(submissionData) {
+    return db.prepare(`
+      INSERT INTO submissions (
+        id, user_id, product_name, input_type, input_source,
+        manufacturer, net_quantity, mrp, consumer_care, date_of_manufacture, country_of_origin,
+        compliance_score, status, ocr_confidence, image_width, image_height, processing_time_ms,
+        raw_data, field_confidences, extracted_text
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(...bind([
+      submissionData.id,
+      submissionData.user_id || 'demo_user',
+      submissionData.product_name,
+      submissionData.input_type,
+      submissionData.input_source,
+      submissionData.manufacturer,
+      submissionData.net_quantity,
+      submissionData.mrp,
+      submissionData.consumer_care,
+      submissionData.date_of_manufacture,
+      submissionData.country_of_origin,
+      submissionData.compliance_score,
+      submissionData.status,
+      submissionData.ocr_confidence,
+      submissionData.image_width,
+      submissionData.image_height,
+      submissionData.processing_time_ms,
+      JSON.stringify(submissionData.raw_data || {}),
+      JSON.stringify(submissionData.field_confidences || {}),
+      submissionData.extracted_text || ''
+    ]));
   },
 
   // Store violations for a submission
-  insertViolations(submissionId, violations) {
-    if (!violations || violations.length === 0) {
-      return Promise.resolve();
+  async insertViolations(submissionId, violations) {
+    if (!violations || violations.length === 0) return;
+
+    const stmt = db.prepare(`
+      INSERT INTO violations (submission_id, field_name, violation_type, severity, message)
+      VALUES (?, ?, ?, ?, ?)
+    `);
+    db.exec('BEGIN');
+    try {
+      for (const violation of violations) {
+        stmt.run(...bind([
+          submissionId,
+          violation.field,
+          violation.type,
+          violation.severity,
+          violation.message
+        ]));
+      }
+      db.exec('COMMIT');
+    } catch (err) {
+      db.exec('ROLLBACK');
+      throw err;
     }
-
-    return new Promise((resolve, reject) => {
-      db.serialize(() => {
-        const stmt = db.prepare(`
-          INSERT INTO violations (submission_id, field_name, violation_type, severity, message)
-          VALUES (?, ?, ?, ?, ?)
-        `);
-
-        violations.forEach((violation) => {
-          stmt.run(
-            submissionId,
-            violation.field,
-            violation.type,
-            violation.severity,
-            violation.message
-          );
-        });
-
-        stmt.finalize((err) => {
-          if (err) reject(err);
-          else resolve();
-        });
-      });
-    });
   },
 
   // Get submission history
-  getSubmissions(userId = 'demo_user', limit = 50, offset = 0) {
-    return new Promise((resolve, reject) => {
-      db.all(`
-        SELECT
-          id, product_name, input_type, input_source,
-          compliance_score, status, created_at,
-          raw_data, field_confidences
-        FROM submissions
-        WHERE user_id = ?
-        ORDER BY created_at DESC
-        LIMIT ? OFFSET ?
-      `, [userId, limit, offset], (err, rows) => {
-        if (err) {
-          reject(err);
-          return;
-        }
+  async getSubmissions(userId = 'demo_user', limit = 50, offset = 0) {
+    const rows = db.prepare(`
+      SELECT
+        id, product_name, input_type, input_source,
+        compliance_score, status, created_at,
+        raw_data, field_confidences
+      FROM submissions
+      WHERE user_id = ?
+      ORDER BY created_at DESC
+      LIMIT ? OFFSET ?
+    `).all(userId, limit, offset);
 
-        const result = rows.map(row => ({
-          ...row,
-          raw_data: JSON.parse(row.raw_data || '{}'),
-          field_confidences: JSON.parse(row.field_confidences || '{}'),
-          timestamp: row.created_at
-        }));
-
-        resolve(result);
-      });
-    });
+    return rows.map(row => ({ ...parseJsonColumns(row), timestamp: row.created_at }));
   },
 
   // Get submission by ID
-  getSubmissionById(submissionId) {
-    return new Promise((resolve, reject) => {
-      db.get(`
-        SELECT * FROM submissions WHERE id = ?
-      `, [submissionId], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
+  async getSubmissionById(submissionId) {
+    const row = db.prepare('SELECT * FROM submissions WHERE id = ?').get(submissionId);
+    return row ? parseJsonColumns(row) : row;
   },
 
   // Get violations by submission ID
-  getViolationsBySubmissionId(submissionId) {
-    return new Promise((resolve, reject) => {
-      db.all(`
-        SELECT * FROM violations WHERE submission_id = ?
-      `, [submissionId], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
+  async getViolationsBySubmissionId(submissionId) {
+    return db.prepare('SELECT * FROM violations WHERE submission_id = ?').all(submissionId);
   },
 
   // Analytics operations
-  getComplianceTrend(userId = 'demo_user', days = 30) {
-    return new Promise((resolve, reject) => {
-      db.all(`
-        SELECT 
-          DATE(created_at) as date,
-          AVG(compliance_score) as avg_score,
-          COUNT(*) as submissions
-        FROM submissions 
-        WHERE user_id = ? 
-          AND created_at >= DATE('now', '-' || ? || ' days')
-        GROUP BY DATE(created_at)
-        ORDER BY date ASC
-      `, [userId, days], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
+  async getComplianceTrend(userId = 'demo_user', days = 30) {
+    return db.prepare(`
+      SELECT
+        DATE(created_at) as date,
+        AVG(compliance_score) as avg_score,
+        COUNT(*) as submissions
+      FROM submissions
+      WHERE user_id = ?
+        AND created_at >= DATE('now', '-' || ? || ' days')
+      GROUP BY DATE(created_at)
+      ORDER BY date ASC
+    `).all(userId, days);
   },
 
-  getOverallStats(userId = 'demo_user') {
-    return new Promise((resolve, reject) => {
-      db.get(`
-        SELECT
-          COUNT(*) as total_submissions,
-          AVG(compliance_score) as avg_compliance_score,
-          COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_count,
-          COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_count,
-          COUNT(CASE WHEN status = 'needs_review' THEN 1 END) as needs_review_count,
-          MAX(created_at) as last_submission,
-          COUNT(CASE WHEN input_type = 'image' THEN 1 END) as image_submissions,
-          COUNT(CASE WHEN input_type = 'url' THEN 1 END) as url_submissions
-        FROM submissions
-        WHERE user_id = ?
-      `, [userId], (err, row) => {
-        if (err) reject(err);
-        else resolve(row);
-      });
-    });
+  async getOverallStats(userId = 'demo_user') {
+    return db.prepare(`
+      SELECT
+        COUNT(*) as total_submissions,
+        AVG(compliance_score) as avg_compliance_score,
+        COUNT(CASE WHEN status = 'approved' THEN 1 END) as approved_count,
+        COUNT(CASE WHEN status = 'failed' THEN 1 END) as failed_count,
+        COUNT(CASE WHEN status = 'needs_review' THEN 1 END) as needs_review_count,
+        MAX(created_at) as last_submission,
+        COUNT(CASE WHEN input_type = 'image' THEN 1 END) as image_submissions,
+        COUNT(CASE WHEN input_type = 'url' THEN 1 END) as url_submissions
+      FROM submissions
+      WHERE user_id = ?
+    `).get(userId);
   },
 
-  getViolationsByBrand(userId = 'demo_user', limit = 10) {
-    return new Promise((resolve, reject) => {
-      db.all(`
-        SELECT 
-          COALESCE(NULLIF(TRIM(manufacturer), ''), 'Unknown') as brand,
-          COUNT(*) as total_submissions,
-          SUM(
-            (SELECT COUNT(*) FROM violations v WHERE v.submission_id = s.id)
-          ) as total_violations,
-          AVG(compliance_score) as avg_score
-        FROM submissions s
-        WHERE user_id = ?
-          AND (manufacturer IS NOT NULL AND manufacturer != '')
-        GROUP BY COALESCE(NULLIF(TRIM(manufacturer), ''), 'Unknown')
-        HAVING total_violations > 0 OR total_submissions > 0
-        ORDER BY total_violations DESC, total_submissions DESC
-        LIMIT ?
-      `, [userId, limit], (err, rows) => {
-        if (err) reject(err);
-        else resolve(rows || []);
-      });
-    });
+  async getViolationsByBrand(userId = 'demo_user', limit = 10) {
+    return db.prepare(`
+      SELECT
+        COALESCE(NULLIF(TRIM(manufacturer), ''), 'Unknown') as brand,
+        COUNT(*) as total_submissions,
+        SUM(
+          (SELECT COUNT(*) FROM violations v WHERE v.submission_id = s.id)
+        ) as total_violations,
+        AVG(compliance_score) as avg_score
+      FROM submissions s
+      WHERE user_id = ?
+        AND (manufacturer IS NOT NULL AND manufacturer != '')
+      GROUP BY COALESCE(NULLIF(TRIM(manufacturer), ''), 'Unknown')
+      HAVING total_violations > 0 OR total_submissions > 0
+      ORDER BY total_violations DESC, total_submissions DESC
+      LIMIT ?
+    `).all(userId, limit);
   },
 
-  close() {
-    return new Promise((resolve, reject) => {
-      db.close((err) => {
-        if (err) reject(err);
-        else resolve();
-      });
-    });
+  async close() {
+    db.close();
   }
 };
 

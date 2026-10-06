@@ -48,7 +48,7 @@ function extractNetQuantity(text) {
 }
 
 // Name and address of manufacturer / packer / marketer / importer, in that order
-function extractManufacturer(lines) {
+function extractManufacturer(lines, continuationLines = 2) {
   const labels = [
     /\b(?:manufactured\s*(?:&|and)?\s*(?:marketed\s*)?by|mfd\.?\s*by|mfg\.?\s*by|made\s*by|manufacturer)\s*[:\-]?\s*(.*)$/i,
     /\b(?:packed\s*by|pkd\.?\s*by|packer|packaged\s*by)\s*[:\-]?\s*(.*)$/i,
@@ -61,7 +61,7 @@ function extractManufacturer(lines) {
       if (!m) continue;
       const parts = m[1].trim() ? [m[1].trim()] : [];
       // Address often continues on the next lines until another declaration starts
-      for (let j = i + 1; j < lines.length && j <= i + 2 && !LABEL_START.test(lines[j]); j++) {
+      for (let j = i + 1; j < lines.length && j <= i + continuationLines && !LABEL_START.test(lines[j]); j++) {
         parts.push(lines[j]);
       }
       if (parts.length) {
@@ -107,14 +107,16 @@ function extractConsumerCare(lines, text) {
   return null;
 }
 
-// Extract all Legal Metrology fields from OCR text
-function extractFieldsFromText(rawText) {
+// Extract all Legal Metrology fields from OCR text (or page text).
+// Options for web pages: labeledOnly drops values found without a label,
+// continuationLines limits how many following lines an address may take.
+function extractFieldsFromText(rawText, { labeledOnly = false, continuationLines = 2 } = {}) {
   const text = rawText || '';
   const lines = splitLines(text);
   const found = {
     product_name: extractProductName(lines),
     MRP: extractMrp(text),
-    manufacturer: extractManufacturer(lines),
+    manufacturer: extractManufacturer(lines, continuationLines),
     net_quantity: extractNetQuantity(text),
     country_of_origin: extractCountryOfOrigin(text),
     consumer_care: extractConsumerCare(lines, text),
@@ -122,7 +124,8 @@ function extractFieldsFromText(rawText) {
   };
   const fields = {};
   const confidences = {};
-  for (const [key, result] of Object.entries(found)) {
+  for (const [key, candidate] of Object.entries(found)) {
+    const result = labeledOnly && candidate?.confidence !== LABELED ? null : candidate;
     fields[key] = result ? result.value : null;
     confidences[key] = result ? result.confidence : 0;
   }
