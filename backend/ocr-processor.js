@@ -3,58 +3,131 @@ const sharp = require('sharp');
 const Tesseract = require('tesseract.js');
 const fs = require('fs').promises;
 
-// Legal Metrology field extractors with regex patterns
-const FIELD_PATTERNS = {
-  // Product name - typically first prominent text or labeled
-  product_name: [
-    /name[:\s]+([^\n\r]+)/gi,
-    /product[:\s]+([^\n\r]+)/gi,
-    /^([A-Za-z\s&]+(?:cream|lotion|powder|tablet|capsule|soap|oil|shampoo|face|skin|hair|body))/gmi
-  ],
-  
-  // MRP (Maximum Retail Price) - must include price with ₹ or Rs.
-  mrp_inclusive: [
-    /(?:mrp|m\.r\.p\.?|price|cost)[:\s]*₹?[\s]*([0-9]+(?:[.,][0-9]+)?)/gi,
-    /₹[\s]*([0-9]+(?:[.,][0-9]+)?)/g,
-    /rs\.?[\s]*([0-9]+(?:[.,][0-9]+)?)/gi,
-    /inr[\s]*([0-9]+(?:[.,][0-9]+)?)/gi
-  ],
-  
-  // Net quantity - weight, volume, or count
-  net_quantity: [
-    /(?:net[\s]*qty|net[\s]*wt|quantity|weight|contents?)[:\s]*([0-9]+(?:\.[0-9]+)?[\s]*(?:g|kg|ml|l|gm|gms|liters?|pieces?|pcs|tablets?|nos?))/gi,
-    /([0-9]+(?:\.[0-9]+)?[\s]*(?:g|kg|ml|l|gm|gms|liters?|pieces?|pcs|tablets?|nos?))/gi
-  ],
-  
-  // Manufacturer, packer, or importer details
-  manufacturer_or_importer_name_address: [
-    /(?:mfg\.?|manufactured[\s]*by|mfd\.?[\s]*by|made[\s]*by|manufacturer)[:\s]*([^\n\r]+(?:\n[^\n\r]+){0,2})/gi,
-    /(?:packed[\s]*by|packer|packaged[\s]*by)[:\s]*([^\n\r]+(?:\n[^\n\r]+){0,2})/gi,
-    /(?:imported[\s]*by|importer)[:\s]*([^\n\r]+(?:\n[^\n\r]+){0,2})/gi,
-    /(?:marketed[\s]*by|marketer)[:\s]*([^\n\r]+(?:\n[^\n\r]+){0,2})/gi
-  ],
-  
-  // Date of manufacture, packaging, or import
-  month_year_of_manufacture_pack_or_import: [
-    /(?:mfg\.?[\s]*date|manufactured[\s]*on|mfd\.?[\s]*on|date[\s]*of[\s]*mfg)[:\s]*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4}|[a-z]{3,}[\s]*[0-9]{2,4})/gi,
-    /(?:packed[\s]*on|pkg\.?[\s]*date|packing[\s]*date)[:\s]*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4}|[a-z]{3,}[\s]*[0-9]{2,4})/gi,
-    /(?:exp\.?[\s]*date|expiry|expires?[\s]*on|best[\s]*before)[:\s]*([0-9]{1,2}[\/\-\.][0-9]{1,2}[\/\-\.][0-9]{2,4}|[a-z]{3,}[\s]*[0-9]{2,4})/gi
-  ],
-  
-  // Country of origin
-  country_of_origin: [
-    /(?:country[\s]*of[\s]*origin|origin|made[\s]*in)[:\s]*([a-z\s]+)/gi,
-    /made[\s]*in[\s]*([a-z\s]+)/gi
-  ],
-  
-  // Consumer care details (phone, email, address)
-  consumer_care: [
-    /(?:customer[\s]*care|consumer[\s]*care|helpline|support)[:\s]*([0-9\s\-\+\(\)]+)/gi,
-    /(?:ph\.?|phone|tel\.?|call)[:\s]*([0-9\s\-\+\(\)]+)/gi,
-    /([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})/g,
-    /(?:address|contact)[:\s]*([^\n\r]+(?:\n[^\n\r]+){0,2})/gi
-  ]
-};
+// Confidence for a value found next to its label vs. one inferred without a label
+const LABELED = 0.85;
+const UNLABELED = 0.6;
+
+// A line starting with one of these begins a new declaration, so multi-line
+// values (manufacturer address) stop there
+const LABEL_START = /^(?:m\.?\s*r\.?\s*p|price|net\s*(?:qty|quantity|wt|weight|contents?|vol)|mfg|mfd|manufactured|manufacturing|packed|pkd|packing|marketed|imported|country|made\s*in|product\s*of|origin|customer|consumer|helpline|toll\s*free|e-?mail|best\s*before|exp|use\s*by|batch|lot|b\.?\s*no|ingredients|date)/i;
+
+const UNIT = '(?:kg|g|gm|gms|mg|ml|l|ltr|litres?|liters?|pcs|pieces?|nos?|tablets?|capsules?)';
+const MONTH = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\\.?';
+const DATE_VALUE = `(\\d{1,2}[\\/\\-.]\\d{1,2}[\\/\\-.]\\d{2,4}|\\d{1,2}[\\/\\-.]\\d{2,4}|${MONTH}[\\s\\-\\/']*\\d{2,4})`;
+
+function splitLines(text) {
+  return text.split(/\r?\n/).map(l => l.replace(/\s+/g, ' ').trim()).filter(Boolean);
+}
+
+function extractProductName(lines) {
+  for (const line of lines) {
+    const m = line.match(/^(?:product(?:\s*name)?|name)\s*[:\-]\s*(.{3,})$/i);
+    if (m) return { value: m[1].trim(), confidence: LABELED };
+  }
+  for (const line of lines) {
+    const m = line.match(/^([A-Za-z][A-Za-z\s&'-]*\b(?:cream|lotion|powder|tablets?|capsules?|soap|oil|shampoo|gel|wash|serum|biscuits?|namkeen|bhujia|chips|tea|coffee|atta|rice|dal|masala|ghee|juice|drink|sauce|pickle|noodles))\b/i);
+    if (m) return { value: m[1].trim(), confidence: UNLABELED };
+  }
+  return null;
+}
+
+function extractMrp(text) {
+  const labeled = text.match(/\b(?:m\.?\s*r\.?\s*p\.?|maximum\s*retail\s*price)[^0-9₹\n]{0,25}(?:₹|rs\.?|inr)?\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/i);
+  if (labeled) return { value: `₹${labeled[1].replace(/,/g, '')}`, confidence: LABELED };
+  const currency = text.match(/(?:₹|\brs\.?|\binr)\s*([0-9][0-9,]*(?:\.[0-9]{1,2})?)/i);
+  if (currency) return { value: `₹${currency[1].replace(/,/g, '')}`, confidence: UNLABELED };
+  return null;
+}
+
+function extractNetQuantity(text) {
+  const labeled = text.match(new RegExp(`\\bnet\\s*(?:qty|quantity|wt|weight|contents?|vol(?:ume)?)\\.?\\s*[:\\-]?\\s*([0-9]+(?:\\.[0-9]+)?\\s*${UNIT})\\b`, 'i'));
+  if (labeled) return { value: labeled[1].trim(), confidence: LABELED };
+  const unlabeled = text.match(new RegExp(`\\b([0-9]+(?:\\.[0-9]+)?\\s*${UNIT})\\b`, 'i'));
+  if (unlabeled) return { value: unlabeled[1].trim(), confidence: UNLABELED };
+  return null;
+}
+
+// Name and address of manufacturer / packer / marketer / importer, in that order
+function extractManufacturer(lines) {
+  const labels = [
+    /\b(?:manufactured\s*(?:&|and)?\s*(?:marketed\s*)?by|mfd\.?\s*by|mfg\.?\s*by|made\s*by|manufacturer)\s*[:\-]?\s*(.*)$/i,
+    /\b(?:packed\s*by|pkd\.?\s*by|packer|packaged\s*by)\s*[:\-]?\s*(.*)$/i,
+    /\b(?:marketed\s*by|marketer)\s*[:\-]?\s*(.*)$/i,
+    /\b(?:imported\s*by|importer)\s*[:\-]?\s*(.*)$/i
+  ];
+  for (const label of labels) {
+    for (let i = 0; i < lines.length; i++) {
+      const m = lines[i].match(label);
+      if (!m) continue;
+      const parts = m[1].trim() ? [m[1].trim()] : [];
+      // Address often continues on the next lines until another declaration starts
+      for (let j = i + 1; j < lines.length && j <= i + 2 && !LABEL_START.test(lines[j]); j++) {
+        parts.push(lines[j]);
+      }
+      if (parts.length) {
+        return { value: parts.map(p => p.replace(/[,\s]+$/, '')).join(', '), confidence: LABELED };
+      }
+    }
+  }
+  return null;
+}
+
+// Month/year of manufacture, packing or import (expiry / best-before is NOT this)
+function extractDateOfManufacture(text) {
+  const m = text.match(new RegExp(
+    `\\b(?:mfg|mfd|manufactured|manufacturing|pkd|packed|packing|date\\s*of\\s*(?:mfg|manufacture|packing|packaging|import)|month\\s*(?:and|&)\\s*year\\s*of\\s*(?:mfg|manufacture|packing|import))\\.?\\s*(?:date|on)?\\s*[:\\-.]?\\s*${DATE_VALUE}`,
+    'i'
+  ));
+  if (m) return { value: m[1].trim(), confidence: LABELED };
+  return null;
+}
+
+function extractCountryOfOrigin(text) {
+  const m = text.match(/\b(?:country\s*of\s*origin|made\s*in|product\s*of|origin)\s*[:\-]?[ \t]*([A-Za-z][A-Za-z \t]{1,40})/i);
+  if (m) return { value: m[1].trim(), confidence: LABELED };
+  return null;
+}
+
+function extractConsumerCare(lines, text) {
+  const phone = /(\+?\d[\d\s\-()]{8,}\d)/;
+  const email = /([A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,})/;
+  const label = /\b(?:customer\s*care|consumer\s*care|helpline|toll\s*free|customer\s*support|contact)\b\s*(?:no\.?|number|details|address)?\s*[:\-]?\s*(.*)$/i;
+  for (let i = 0; i < lines.length; i++) {
+    const m = lines[i].match(label);
+    if (!m) continue;
+    const nearby = [m[1], lines[i + 1] || ''].join(' ');
+    const ph = nearby.match(phone);
+    if (ph && ph[1].replace(/\D/g, '').length >= 10) return { value: ph[1].trim(), confidence: LABELED };
+    const em = nearby.match(email);
+    if (em) return { value: em[1], confidence: LABELED };
+    if (m[1].trim().length > 5) return { value: m[1].trim(), confidence: UNLABELED };
+  }
+  const em = text.match(email);
+  if (em) return { value: em[1], confidence: UNLABELED };
+  return null;
+}
+
+// Extract all Legal Metrology fields from OCR text
+function extractFieldsFromText(rawText) {
+  const text = rawText || '';
+  const lines = splitLines(text);
+  const found = {
+    product_name: extractProductName(lines),
+    MRP: extractMrp(text),
+    manufacturer: extractManufacturer(lines),
+    net_quantity: extractNetQuantity(text),
+    country_of_origin: extractCountryOfOrigin(text),
+    consumer_care: extractConsumerCare(lines, text),
+    date_of_manufacture: extractDateOfManufacture(text)
+  };
+  const fields = {};
+  const confidences = {};
+  for (const [key, result] of Object.entries(found)) {
+    fields[key] = result ? result.value : null;
+    confidences[key] = result ? result.confidence : 0;
+  }
+  return { fields, confidences };
+}
 
 // Preprocess image for better OCR accuracy
 async function preprocessImage(imagePath) {
@@ -123,40 +196,6 @@ async function extractTextFromImage(imagePath) {
   }
 }
 
-// Extract specific field using patterns
-function extractField(text, fieldName) {
-  const patterns = FIELD_PATTERNS[fieldName] || [];
-  let bestMatch = null;
-  let highestConfidence = 0;
-  
-  for (const pattern of patterns) {
-    const matches = text.match(pattern);
-    if (matches) {
-      for (const match of matches) {
-        const groups = pattern.exec(text);
-        if (groups && groups[1]) {
-          const value = groups[1].trim();
-          if (value.length > 2) {
-            // Simple confidence based on length and position
-            const confidence = Math.min(0.9, 0.6 + (value.length / 100));
-            if (confidence > highestConfidence) {
-              highestConfidence = confidence;
-              bestMatch = value;
-            }
-          }
-        }
-        // Reset regex lastIndex for global patterns
-        pattern.lastIndex = 0;
-      }
-    }
-  }
-  
-  return {
-    value: bestMatch,
-    confidence: highestConfidence
-  };
-}
-
 // Main OCR processing function
 async function processLabelImage(imagePath) {
   try {
@@ -174,41 +213,19 @@ async function processLabelImage(imagePath) {
     console.log('OCR extraction completed with confidence:', ocrResult.confidence);
     
     // Extract all required Legal Metrology fields
-    const fields = {};
-    const fieldConfidences = {};
-    
-    for (const fieldName of Object.keys(FIELD_PATTERNS)) {
-      const extraction = extractField(ocrResult.text, fieldName);
-      fields[fieldName] = extraction.value;
-      fieldConfidences[fieldName] = extraction.confidence;
-    }
-    
+    const { fields, confidences: fieldConfidences } = extractFieldsFromText(ocrResult.text);
+
     // Calculate overall confidence
     const confidenceValues = Object.values(fieldConfidences).filter(c => c > 0);
-    const overallConfidence = confidenceValues.length > 0 
-      ? confidenceValues.reduce((a, b) => a + b, 0) / confidenceValues.length 
+    const overallConfidence = confidenceValues.length > 0
+      ? confidenceValues.reduce((a, b) => a + b, 0) / confidenceValues.length
       : 0;
-    
-    // Map to canonical keys expected by server
+
     const normalizedFields = {
-      product_name: fields.product_name || null,
-      MRP: fields.mrp_inclusive || null,
-      manufacturer: fields.manufacturer_or_importer_name_address || null,
-      net_quantity: fields.net_quantity || null,
-      country_of_origin: fields.country_of_origin || null,
-      consumer_care: fields.consumer_care || null,
-      date_of_manufacture: fields.month_year_of_manufacture_pack_or_import || null,
+      ...fields,
       _ocr_confidence: Math.max(overallConfidence, ocrResult.confidence),
       _image_resolution: imageResolution,
-      _field_confidences: {
-        product_name: fieldConfidences.product_name || 0,
-        MRP: fieldConfidences.mrp_inclusive || 0,
-        manufacturer: fieldConfidences.manufacturer_or_importer_name_address || 0,
-        net_quantity: fieldConfidences.net_quantity || 0,
-        country_of_origin: fieldConfidences.country_of_origin || 0,
-        consumer_care: fieldConfidences.consumer_care || 0,
-        date_of_manufacture: fieldConfidences.month_year_of_manufacture_pack_or_import || 0
-      },
+      _field_confidences: fieldConfidences,
       _extracted_text: ocrResult.text.substring(0, 500), // Keep sample for debugging
       _ocr_source: 'image'
     };
@@ -226,5 +243,5 @@ async function processLabelImage(imagePath) {
 module.exports = {
   processLabelImage,
   extractTextFromImage,
-  FIELD_PATTERNS
+  extractFieldsFromText
 };

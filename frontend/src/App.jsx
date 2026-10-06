@@ -204,71 +204,16 @@ export default function ComplianceApp() {
     }
   }
 
-  // Fetch analytics data from backend
-  async function fetchAnalytics() {
-    setAnalyticsLoading(true);
-    setAnalyticsError(null);
+  const loadAnalytics = useCallback(async () => {
+    setAnalytics(a => ({ ...a, loading: true, error: null }));
     try {
-      const [trendRes, brandsRes, statsRes] = await Promise.all([
-        fetch(`${API_BASE_URL}/api/analytics/trend`).then(r => r.json()),
-        fetch(`${API_BASE_URL}/api/analytics/brands`).then(r => r.json()),
-        fetch(`${API_BASE_URL}/api/analytics/stats`).then(r => r.json())
-      ]);
-      
-      // Transform trend data for the chart
-      const transformedTrendData = Array.isArray(trendRes) ? trendRes.map(item => ({
-        x: item.x,
-        compliance: item.compliance,
-        date: item.date,
-        submissions: item.submissions
-      })) : [];
-      
-      // Transform brand data for the chart
-      const transformedBrandData = Array.isArray(brandsRes) ? brandsRes.map(item => ({
-        brand: item.brand,
-        violations: item.violations,
-        submissions: item.submissions,
-        avg_score: item.avg_score
-      })) : [];
-      
-      setTrendData(transformedTrendData);
-      setBrandViolations(transformedBrandData);
-      setOverallStats(statsRes);
+      const data = await getAnalytics();
+      setAnalytics({ data, loading: false, error: null });
     } catch (err) {
-      console.error('Analytics fetch error:', err);
-      setAnalyticsError('Failed to load analytics');
-      
-      // Fallback to mock data if API fails
-      const mockTrendData = [
-        { x: 'Day 1', compliance: 85, date: '2023-05-01', submissions: 5 },
-        { x: 'Day 2', compliance: 78, date: '2023-05-02', submissions: 3 },
-        { x: 'Day 3', compliance: 92, date: '2023-05-03', submissions: 7 },
-        { x: 'Day 4', compliance: 88, date: '2023-05-04', submissions: 4 },
-        { x: 'Day 5', compliance: 95, date: '2023-05-05', submissions: 6 }
-      ];
-      
-      const mockBrandViolations = [
-        { brand: 'Brand A', violations: 12, submissions: 8, avg_score: 75 },
-        { brand: 'Brand B', violations: 8, submissions: 5, avg_score: 82 },
-        { brand: 'Brand C', violations: 15, submissions: 10, avg_score: 68 },
-        { brand: 'Brand D', violations: 5, submissions: 3, avg_score: 88 },
-        { brand: 'Brand E', violations: 10, submissions: 7, avg_score: 72 }
-      ];
-      
-      setTrendData(mockTrendData);
-      setBrandViolations(mockBrandViolations);
-    } finally {
-      setAnalyticsLoading(false);
+      setAnalytics(a => ({ ...a, loading: false, error: err.message }));
     }
-  }
-
-  // Fetch analytics on mount and after every scan
-  useEffect(() => {
-    fetchAnalytics();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // Refetch analytics after a scan is performed
   useEffect(() => {
     if (result !== null) {
       fetchAnalytics();
@@ -283,73 +228,38 @@ export default function ComplianceApp() {
     return 'bg-red-100 text-red-800';
   }
 
-  // Handle viewing a previous submission
-  function viewSubmission(submission) {
-    setSelectedSubmission(submission);
-    setResult(submission);
+  async function handleCheck(input) {
+    setScan({ state: 'loading', kind: input.kind, input });
+    setSelected(null);
+    setAnnouncement('');
+    revealResult();
+    try {
+      const entry = toEntry(await runCheck(input), input);
+      setSelected(entry);
+      setScan({ state: 'idle' });
+      setAnnouncement(`Check complete: ${statusOf(entry.status).label}, score ${entry.compliance_score} out of 100.`);
+      setHistory(h => ({ ...h, items: [entry, ...h.items.filter(i => i.id !== entry.id)] }));
+      loadAnalytics();
+    } catch (err) {
+      setScan({ state: 'error', message: err.message, input });
+    }
   }
 
-  function clearSelection() {
-    setSelectedSubmission(null);
-    setResult(null);
-    if (fileInputRef.current) fileInputRef.current.value = '';
-    if (linkInputRef.current) linkInputRef.current.value = '';
+  function handleSelect(entry) {
+    setSelected(entry);
+    setScan({ state: 'idle' });
+    revealResult();
   }
-
-  // Custom tooltip for compliance trend
-  const CustomTooltip = ({ active, payload, label }) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="bg-white p-3 border border-gray-200 rounded shadow-md">
-          <p className="font-semibold">{`${label}`}</p>
-          <p className="text-blue-600">{`Compliance: ${payload[0].value}%`}</p>
-          {payload[0].payload.date && (
-            <p className="text-gray-600">{`Date: ${payload[0].payload.date}`}</p>
-          )}
-          {payload[0].payload.submissions && (
-            <p className="text-gray-600">{`Submissions: ${payload[0].payload.submissions}`}</p>
-          )}
-        </div>
-      );
-    }
-    return null;
-  };
-
-  // Custom tooltip for brand violations
-  const BrandTooltip = ({ active, payload, label }) => {
-    if (active && payload && payload.length) {
-      return (
-        <div className="bg-white p-3 border border-gray-200 rounded shadow-md">
-          <p className="font-semibold">{`Brand: ${label}`}</p>
-          <p className="text-red-600">{`Violations: ${payload[0].value}`}</p>
-          {payload[0].payload.submissions && (
-            <p className="text-gray-600">{`Submissions: ${payload[0].payload.submissions}`}</p>
-          )}
-          {payload[0].payload.avg_score && (
-            <p className="text-gray-600">{`Avg Score: ${payload[0].payload.avg_score}%`}</p>
-          )}
-        </div>
-      );
-    }
-    return null;
-  };
 
   return (
-    <div className="min-h-screen bg-gray-100">
-      {/* Header */}
-      <div className="bg-gradient-to-r from-blue-800 to-indigo-900 text-white p-4 shadow-md">
-        <div className="container mx-auto flex justify-between items-center">
-          <h1 className="text-2xl font-bold">CompliScan Dashboard</h1>
-          {overallStats && (
-            <div className="hidden md:flex space-x-4 text-sm">
-              <div className="bg-blue-700 bg-opacity-50 px-3 py-1 rounded">
-                <span className="font-semibold">{overallStats.total_submissions || 0}</span> Scans
-              </div>
-              <div className="bg-green-700 bg-opacity-50 px-3 py-1 rounded">
-                <span className="font-semibold">{Math.round(overallStats.avg_compliance_score || 0)}%</span> Avg Score
-              </div>
-            </div>
-          )}
+    <div className="app">
+      <header className="topbar">
+        <div className="topbar-inner">
+          <span className="brand">
+            <span className="brand-mark"><ShieldCheck /></span>
+            CompliScan
+          </span>
+          <span className="topbar-tag">Legal Metrology label checks</span>
         </div>
       </div>
 
@@ -806,7 +716,17 @@ export default function ComplianceApp() {
             )}
           </div>
         </div>
+
+        <Analytics state={analytics} onRetry={loadAnalytics} />
+        <History
+          state={history}
+          selectedId={selected?.id}
+          onSelect={handleSelect}
+          onRefresh={loadHistory}
+        />
       </main>
+
+      <p className="visually-hidden" role="status" aria-live="polite">{announcement}</p>
     </div>
   );
 }

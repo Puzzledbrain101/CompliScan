@@ -9,7 +9,6 @@ This is a compliance dashboard application imported from GitHub that helps with 
 - ✅ Frontend on port 5000 (user-facing)  
 - ✅ Backend on port 8000 (internal API)
 - ✅ Deployment configuration complete
-- ⚠️ OpenAI API key not configured (AI features disabled)
 
 ## Project Architecture
 
@@ -30,7 +29,6 @@ This is a compliance dashboard application imported from GitHub that helps with 
   - OCR processing (mocked)
   - Compliance rule engine
   - Rate limiting and security headers
-  - AI-powered analysis (requires OpenAI API key)
 
 ## Recent Changes
 - **Date**: September 14, 2025
@@ -38,7 +36,6 @@ This is a compliance dashboard application imported from GitHub that helps with 
   - Imported project from GitHub zip file
   - Installed Node.js 20 and all dependencies  
   - Modified backend to use localhost instead of 0.0.0.0
-  - Made OpenAI initialization conditional (optional API key)
   - Created startup script to run both services
   - Configured workflow for port 5000 web preview
   - Set up deployment configuration for autoscale
@@ -53,7 +50,6 @@ This is a compliance dashboard application imported from GitHub that helps with 
 - `.gitignore`: Node.js project exclusions
 
 ### Environment Variables (Optional)
-- `OPENAI_API_KEY`: Enables AI-powered compliance explanations and data normalization
 - `NODE_ENV`: Set to 'production' for production deployment
 
 ## API Endpoints
@@ -64,7 +60,6 @@ This is a compliance dashboard application imported from GitHub that helps with 
 
 ## User Preferences
 - Application is ready to use without additional configuration
-- OpenAI features can be enabled by adding API key if needed
 - Frontend uses modern React with Vite for fast development
 
 ## Deployment

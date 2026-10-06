@@ -8,7 +8,7 @@ const helmet = require('helmet');
 const rateLimit = require('express-rate-limit');
 const { body, validationResult } = require('express-validator');
 const mimeTypes = require('mime-types');
-const dns = require('dns').promises;
+const { safeLookup, validateUrl } = require('./url-safety');
 const fs = require('fs').promises;
 const path = require('path');
 const cors = require('cors');
@@ -17,18 +17,6 @@ const cors = require('cors');
 const { processLabelImage } = require('./ocr-processor');
 const { createNormalizedLabel, validateLabel } = require('./schema');
 const { operations } = require('./database');
-
-// Initialize OpenAI client (optional - only if API key provided)
-// the newest OpenAI model is "gpt-5" which was released August 7, 2025. do not change this unless explicitly requested by the user
-const OpenAI = require('openai');
-let openai = null;
-
-if (process.env.OPENAI_API_KEY) {
-  openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-  console.log('OpenAI client initialized successfully');
-} else {
-  console.log('OpenAI API key not provided. AI features will be disabled.');
-}
 
 // Configure secure file upload with limits
 const upload = multer({
@@ -52,17 +40,21 @@ const app = express();
 // Trust proxy when behind reverse proxy (Replit environment)
 app.set('trust proxy', 1);
 
-// SIMPLE AND RELIABLE CORS CONFIGURATION
+// CORS: comma-separated CORS_ORIGINS overrides the default allow-list
+const DEFAULT_CORS_ORIGINS = [
+  'https://compliscan-blond.vercel.app',
+  'https://compliscan-o505uw4t9-swayam-shahs-projects-9ce01a2a.vercel.app',
+  'https://compliscan-79jw4lod7-swayam-shahs-projects-9ce01a2a.vercel.app',
+  'https://compliscan-swayam-shahs-projects-9ce01a2a.vercel.app',
+  'http://localhost:3000',
+  'http://localhost:5000',
+  'http://localhost:5173',
+  'https://localhost:5000'
+];
 const corsOptions = {
-  origin: [
-    'https://compliscan-blond.vercel.app',
-    'https://compliscan-o505uw4t9-swayam-shahs-projects-9ce01a2a.vercel.app',
-    'https://compliscan-79jw4lod7-swayam-shahs-projects-9ce01a2a.vercel.app',
-    'https://compliscan-swayam-shahs-projects-9ce01a2a.vercel.app',
-    'http://localhost:3000',
-    'http://localhost:5000',
-    'https://localhost:5000'
-  ],
+  origin: process.env.CORS_ORIGINS
+    ? process.env.CORS_ORIGINS.split(',').map(o => o.trim()).filter(Boolean)
+    : DEFAULT_CORS_ORIGINS,
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With'],
@@ -117,67 +109,6 @@ app.use('/api/check', checkLimiter);
 
 app.use(express.json({ limit: '10mb' })); // Prevent large JSON payloads
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
-// Enhanced URL validation to prevent SSRF with DNS resolution checks
-async function validateUrl(url) {
-  try {
-    const parsedUrl = new URL(url);
-    
-    // Only allow http and https protocols
-    if (!['http:', 'https:'].includes(parsedUrl.protocol)) {
-      throw new Error('Only HTTP and HTTPS protocols are allowed');
-    }
-    
-    const hostname = parsedUrl.hostname.toLowerCase();
-    
-    // Block private IP ranges and localhost (initial check)
-    const privatePatterns = [
-      /^127\./, // 127.x.x.x (localhost)
-      /^10\./, // 10.x.x.x (private)
-      /^172\.(1[6-9]|2[0-9]|3[0-1])\./, // 172.16.x.x - 172.31.x.x (private)
-      /^192\.168\./, // 192.168.x.x (private)
-      /^169\.254\./, // 169.254.x.x (link-local)
-      /^::1$/, // IPv6 localhost
-      /^fc00:/, // IPv6 private
-      /^fe80:/, // IPv6 link-local
-      /localhost/i,
-      /\.local$/i,
-      /^metadata\./, // AWS metadata
-      /^169\.254\.169\.254$/, // AWS metadata IP
-    ];
-    
-    if (privatePatterns.some(pattern => pattern.test(hostname))) {
-      throw new Error('Access to private IP ranges is not allowed');
-    }
-    
-    // DNS resolution check to prevent DNS rebinding attacks
-    try {
-      const addresses = await dns.resolve4(hostname).catch(() => []);
-      const addresses6 = await dns.resolve6(hostname).catch(() => []);
-      const allAddresses = [...addresses, ...addresses6];
-      
-      for (const addr of allAddresses) {
-        if (privatePatterns.some(pattern => pattern.test(addr))) {
-          throw new Error('Domain resolves to private IP address');
-        }
-        // Additional specific IP blocks
-        if (addr.startsWith('0.') || addr === '255.255.255.255') {
-          throw new Error('Invalid IP address range');
-        }
-      }
-    } catch (dnsError) {
-      if (dnsError.message.includes('private IP') || dnsError.message.includes('Invalid IP')) {
-        throw dnsError;
-      }
-      // DNS resolution failed, allow but log
-      console.warn(`DNS resolution failed for ${hostname}: ${dnsError.message}`);
-    }
-    
-    return true;
-  } catch (error) {
-    throw new Error(`URL validation failed: ${error.message}`);
-  }
-}
 
 // Utility function to clean up uploaded files
 async function cleanupFile(filePath) {
@@ -499,15 +430,28 @@ async function scrapeProduct(url) {
   }
   
   
-  const { data } = await axios.get(url, { 
-    timeout: (isFlipkart || isMyntra) ? 15000 : 8000, // Longer timeout for problematic sites
-    maxContentLength: 3 * 1024 * 1024, // 3MB limit
-    maxRedirects: 3,
-    headers,
-    validateStatus: function (status) {
-      return status >= 200 && status < 400; // Accept 2xx and 3xx status codes
-    }
-  });
+  // Follow redirects manually so every hop goes through validateUrl
+  const MAX_REDIRECTS = 3;
+  let currentUrl = url;
+  let response;
+  for (let hop = 0; ; hop++) {
+    response = await axios.get(currentUrl, {
+      timeout: (isFlipkart || isMyntra) ? 15000 : 8000, // Longer timeout for problematic sites
+      maxContentLength: 3 * 1024 * 1024, // 3MB limit
+      maxRedirects: 0,
+      lookup: safeLookup,
+      headers,
+      validateStatus: function (status) {
+        return status >= 200 && status < 400; // Accept 2xx and 3xx status codes
+      }
+    });
+    const location = response.headers.location;
+    if (response.status < 300 || !location) break;
+    if (hop >= MAX_REDIRECTS) throw new Error('Too many redirects');
+    currentUrl = new URL(location, currentUrl).toString();
+    await validateUrl(currentUrl);
+  }
+  const { data } = response;
   
   // Debug logging for problematic sites
   if (isMyntra && data.includes('Something went wrong')) {
@@ -684,18 +628,13 @@ async function scrapeProduct(url) {
   if (manufacturer && typeof manufacturer === 'string') manufacturer = manufacturer.substring(0, 100);
   if (country_of_origin && typeof country_of_origin === 'string') country_of_origin = country_of_origin.substring(0, 100);
   
-  let rawData = {
+  return {
     product_name,
     MRP: price,
     net_quantity,
     manufacturer,
     country_of_origin
   };
-
-  // Apply AI normalization for better data quality
-  const normalizedData = await normalizeProductData(rawData);
-  
-  return normalizedData;
 }
 
 app.post('/api/check', 
@@ -928,39 +867,58 @@ app.post('/api/check',
   }
 );
 
+// SQLite CURRENT_TIMESTAMP is UTC without a zone ("YYYY-MM-DD HH:MM:SS")
+function toIsoUtc(sqliteTimestamp) {
+  if (!sqliteTimestamp) return null;
+  return sqliteTimestamp.includes('T') ? sqliteTimestamp : `${sqliteTimestamp.replace(' ', 'T')}Z`;
+}
+
+// Shape a stored submission like the /api/check response so the frontend
+// can render history entries and fresh results the same way
+function formatSubmission(sub) {
+  const raw = sub.raw_data || {};
+  return {
+    id: sub.id,
+    product_preview: sub.product_name || 'Unknown product',
+    input_type: sub.input_type,
+    input_source: sub.input_source,
+    parsed: {
+      product_name: sub.product_name,
+      MRP: raw.MRP,
+      manufacturer: raw.manufacturer,
+      net_quantity: raw.net_quantity,
+      country_of_origin: raw.country_of_origin,
+      consumer_care: raw.consumer_care,
+      date_of_manufacture: raw.date_of_manufacture,
+      _ocr_confidence: raw._ocr_confidence,
+      _image_resolution: raw._image_resolution,
+      _field_confidences: sub.field_confidences
+    },
+    compliance_score: sub.compliance_score,
+    status: sub.status,
+    violations: (raw.violations || []).map(v => v.message),
+    unverifiable: (raw.unverifiable_fields || []).map(u => u.message),
+    issues: raw.violations || [],
+    unverifiable_fields: raw.unverifiable_fields || [],
+    reasons: [],
+    timestamp: toIsoUtc(sub.created_at),
+    highlight: sub.status !== 'approved'
+  };
+}
+
 // Get submission history
 app.get('/api/submissions', async (req, res) => {
   try {
-    const { limit = 50, offset = 0, user_id = 'demo_user' } = req.query;
-    const submissions = await operations.getSubmissions(user_id, parseInt(limit), parseInt(offset));
-    // Transform for frontend compatibility
-    const formattedSubmissions = submissions.map(sub => ({
-      id: sub.id,
-      product_preview: sub.product_name || 'Unknown product',
-      input_type: sub.input_type,
-      parsed: {
-        product_name: sub.product_name,
-        MRP: sub.raw_data.MRP,
-        manufacturer: sub.raw_data.manufacturer,
-        net_quantity: sub.raw_data.net_quantity,
-        country_of_origin: sub.raw_data.country_of_origin,
-        consumer_care: sub.raw_data.consumer_care,
-        date_of_manufacture: sub.raw_data.date_of_manufacture,
-        _ocr_confidence: sub.raw_data._ocr_confidence,
-        _image_resolution: sub.raw_data._image_resolution,
-        _field_confidences: sub.field_confidences
-      },
-      compliance_score: sub.compliance_score,
-      status: sub.status,
-      violations: [], // Will be populated if needed
-      timestamp: sub.timestamp,
-      highlight: sub.status === 'failed' || sub.compliance_score < 100
-    }));
+    const { user_id = 'demo_user' } = req.query;
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 50, 1), 200);
+    const offset = Math.max(parseInt(req.query.offset, 10) || 0, 0);
+    const submissions = await operations.getSubmissions(user_id, limit, offset);
+    const formattedSubmissions = submissions.map(formatSubmission);
 
     res.json({
       submissions: formattedSubmissions,
       total: formattedSubmissions.length,
-      has_more: formattedSubmissions.length === parseInt(limit)
+      has_more: formattedSubmissions.length === limit
     });
   } catch (error) {
     console.error('Failed to get submissions:', error);
@@ -975,34 +933,9 @@ app.get('/api/submissions/:id', async (req, res) => {
     if (!submission) {
       return res.status(404).json({ error: 'Submission not found' });
     }
-    // Fetch violations for this submission
-    const violations = await operations.getViolationsBySubmissionId(req.params.id);
+    const violationDetails = await operations.getViolationsBySubmissionId(req.params.id);
 
-    // Transform for frontend compatibility
-    const formatted = {
-      id: submission.id,
-      product_preview: submission.product_name || 'Unknown product',
-      input_type: submission.input_type,
-      parsed: {
-        product_name: submission.product_name,
-        MRP: submission.raw_data.MRP,
-        manufacturer: submission.raw_data.manufacturer,
-        net_quantity: submission.raw_data.net_quantity,
-        country_of_origin: submission.raw_data.country_of_origin,
-        consumer_care: submission.raw_data.consumer_care,
-        date_of_manufacture: submission.raw_data.date_of_manufacture,
-        _ocr_confidence: submission.raw_data._ocr_confidence,
-        _image_resolution: submission.raw_data._image_resolution,
-        _field_confidences: submission.field_confidences
-      },
-      compliance_score: submission.compliance_score,
-      status: submission.status,
-      violations: violations || [],
-      timestamp: submission.created_at,
-      highlight: submission.status === 'failed' || submission.compliance_score < 100
-    };
-
-    res.json(formatted);
+    res.json({ ...formatSubmission(submission), violation_details: violationDetails });
   } catch (error) {
     console.error('Failed to get submission:', error);
     res.status(500).json({ error: 'Failed to retrieve submission' });
@@ -1015,29 +948,14 @@ app.get('/api/analytics/trend', async (req, res) => {
     const { days = 30, user_id = 'demo_user' } = req.query;
     const trendData = await operations.getComplianceTrend(user_id, parseInt(days));
     
-    // Transform for recharts format - ensure we have data for all days
-    const formatted = trendData.map((item, index) => ({
-      x: `Day ${index + 1}`,
+    // Transform for recharts format
+    const formatted = trendData.map((item) => ({
+      x: item.date,
       compliance: Math.round(item.avg_score || 0),
       date: item.date,
       submissions: item.submissions || 0
     }));
-    
-    // If no data, return some sample data for the demo
-    if (formatted.length === 0) {
-      const today = new Date();
-      for (let i = 29; i >= 0; i--) {
-        const date = new Date(today);
-        date.setDate(date.getDate() - i);
-        formatted.push({
-          x: `Day ${30 - i}`,
-          compliance: Math.floor(Math.random() * 30) + 70, // Random between 70-100
-          date: date.toISOString().split('T')[0],
-          submissions: Math.floor(Math.random() * 5) + 1
-        });
-      }
-    }
-    
+
     res.json(formatted);
   } catch (error) {
     console.error('Failed to get trend data:', error);
@@ -1057,18 +975,7 @@ app.get('/api/analytics/brands', async (req, res) => {
       submissions: item.total_submissions || 0,
       avg_score: Math.round(item.avg_score || 0)
     }));
-    
-    // If no data, return some sample data for the demo
-    if (formatted.length === 0) {
-      const sampleBrands = ['Brand A', 'Brand B', 'Brand C', 'Brand D', 'Brand E'];
-      formatted.push(...sampleBrands.map((brand, index) => ({
-        brand,
-        violations: Math.floor(Math.random() * 15) + 5,
-        submissions: Math.floor(Math.random() * 10) + 3,
-        avg_score: Math.floor(Math.random() * 30) + 65
-      })));
-    }
-    
+
     res.json(formatted);
   } catch (error) {
     console.error('Failed to get brand data:', error);

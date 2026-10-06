@@ -7,6 +7,14 @@ This repository contains a demo frontend (React + Vite) and a simple Express bac
 - Rule engine for Legal Metrology compliance checks
 - A small dashboard UI for seller and backend views
 
+## Tests
+```
+cd backend
+npm test
+```
+
+Uses the built-in Node test runner; covers OCR field extraction, compliance scoring, and SSRF URL checks. No network needed.
+
 ## Run frontend (dev)
 ```
 cd frontend

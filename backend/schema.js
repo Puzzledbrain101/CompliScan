@@ -22,7 +22,7 @@ const MANDATORY_FIELDS = {
     type: 'string',
     maxLength: 50,
     description: 'Net quantity in standard units (weight, measure, or number)',
-    validation: /\d+\s*(g|kg|ml|l|gm|gms|liters?|pieces?|pcs|tablets?|nos?)/i
+    validation: /\d+\s*(g|kg|mg|ml|l|ltr|gm|gms|litres?|liters?|pieces?|pcs|tablets?|capsules?|nos?)/i
   },
   
   // 3. Retail sale price (MRP) inclusive of all taxes
@@ -49,7 +49,7 @@ const MANDATORY_FIELDS = {
     type: 'string',
     maxLength: 50,
     description: 'Date of manufacture, packing, or import',
-    validation: /\d{1,2}[\/\-\.]\d{1,2}[\/\-\.]\d{2,4}|[a-z]{3,}\s*\d{2,4}/i
+    validation: /\d{1,2}[\/\-\.](?:\d{1,2}[\/\-\.])?\d{2,4}|[a-z]{3,}\.?[\s\-\/']*\d{2,4}/i  // DD/MM/YYYY, MM/YYYY, MAY 2025
   },
   
   // 6. Country of origin
