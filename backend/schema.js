@@ -62,10 +62,6 @@ const MANDATORY_FIELDS = {
   }
 };
 
-// Fields that e-commerce listings rarely show; when scraping a URL their absence
-// is reported as "not verifiable" rather than as a violation
-const UNVERIFIABLE_FROM_URL = ['consumer_care', 'date_of_manufacture'];
-
 // Optional supplemental fields (not counted in compliance scoring)
 const SUPPLEMENTAL_FIELDS = {
   product_name: {
@@ -87,23 +83,16 @@ function createNormalizedLabel(rawData, options = {}) {
   const normalized = {};
   const fieldConfidences = {};
   const violations = [];
-  const unverifiableFields = [];
-
+  
   // Process each mandatory field (exactly 6 for Legal Metrology compliance)
   for (const [fieldName, schema] of Object.entries(MANDATORY_FIELDS)) {
     let value = rawData[fieldName];
     let confidence = options.fieldConfidences?.[fieldName] || 0.5; // Default confidence for URL sources
-
+    
     // Sanitize and validate
     if (value && typeof value === 'string') {
       value = value.trim().substring(0, schema.maxLength);
-
-      // Strip label prefixes like "Made in" / "Country of Origin:" and trailing punctuation
-      if (fieldName === 'country_of_origin') {
-        value = value.replace(/^(country\s*of\s*origin|made\s*in|origin)\s*[:\-]?\s*/i, '')
-                     .replace(/[.\s]+$/, '');
-      }
-
+      
       // Check if value is meaningful (not just placeholder)
       if (value.length < 2 || value.toLowerCase().includes('not available') || 
           value.toLowerCase().includes('n/a') || value === '-' || value === '—') {
@@ -129,13 +118,6 @@ function createNormalizedLabel(rawData, options = {}) {
     
     // Check for missing required fields
     if (schema.required && (!value || value.trim() === '')) {
-      if (options.source === 'url' && UNVERIFIABLE_FROM_URL.includes(fieldName)) {
-        unverifiableFields.push({
-          field: fieldName,
-          message: `${schema.description} is not shown on the listing - verify on the physical label`
-        });
-        continue;
-      }
       violations.push({
         field: fieldName,
         type: 'missing',
@@ -160,8 +142,8 @@ function createNormalizedLabel(rawData, options = {}) {
     normalized[fieldName] = value;
   }
   
-  // Calculate overall compliance score (only mandatory fields that can be verified)
-  const totalFields = Object.keys(MANDATORY_FIELDS).length - unverifiableFields.length;
+  // Calculate overall compliance score (only mandatory fields)
+  const totalFields = Object.keys(MANDATORY_FIELDS).length; // Always 6
   const presentFields = Object.entries(MANDATORY_FIELDS)
     .filter(([fieldName]) => normalized[fieldName] && normalized[fieldName].trim()).length;
   
@@ -204,7 +186,6 @@ function createNormalizedLabel(rawData, options = {}) {
     compliance_score: complianceScore,
     status: status,
     violations: violations,
-    unverifiable_fields: unverifiableFields,
     fields_present: presentFields,
     fields_total: totalFields,
     

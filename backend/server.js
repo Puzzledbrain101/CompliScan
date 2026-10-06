@@ -16,7 +16,7 @@ const cors = require('cors');
 // Import OCR processor and schema
 const { processLabelImage } = require('./ocr-processor');
 const { createNormalizedLabel, validateLabel } = require('./schema');
-const { operations, initializeDatabase } = require('./database');
+const { operations } = require('./database');
 
 // Configure secure file upload with limits
 const upload = multer({
@@ -231,6 +231,110 @@ function extractStructuredData($) {
   
   console.log('Structured data extracted:', Object.keys(data).filter(k => data[k]));
   return data;
+}
+
+// AI-powered field normalization and enhancement
+async function normalizeProductData(data) {
+  if (!openai || !process.env.OPENAI_API_KEY) {
+    console.log('OpenAI not configured, skipping AI normalization');
+    return { ...data, ai_confidence: 0 };
+  }
+
+  try {
+    const prompt = `Analyze and normalize this e-commerce product data. Extract missing fields, standardize units, and clean up the information. Return JSON with normalized data and confidence scores.
+
+Product Data:
+${JSON.stringify(data, null, 2)}
+
+Rules:
+1. Clean and standardize product names (remove excessive marketing text)
+2. Extract numeric MRP/price with currency (₹ for Indian sites)
+3. Standardize manufacturer/brand names (canonical forms)
+4. Normalize net_quantity with proper units (g, kg, ml, l, pieces)
+5. Standardize country_of_origin (full country names)
+6. Add confidence score (0-1) for each field
+
+Return JSON in this exact format:
+{
+  "product_name": "cleaned name",
+  "MRP": "₹amount",
+  "manufacturer": "Brand Name",
+  "net_quantity": "amount unit",
+  "country_of_origin": "Country Name",
+  "confidence": {
+    "product_name": 0.9,
+    "MRP": 0.8,
+    "manufacturer": 0.9,
+    "net_quantity": 0.7,
+    "country_of_origin": 0.6
+  },
+  "ai_enhanced": true
+}`;
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-5",
+      messages: [{ role: "user", content: prompt }],
+      response_format: { type: "json_object" },
+      temperature: 0.3
+    });
+
+    const aiResult = JSON.parse(response.choices[0].message.content);
+    
+    // Merge AI results with original data, preferring AI when confidence > 0.7
+    const normalized = { ...data };
+    for (const [key, value] of Object.entries(aiResult)) {
+      if (key === 'confidence' || key === 'ai_enhanced') continue;
+      if (value && (!data[key] || aiResult.confidence?.[key] > 0.7)) {
+        normalized[key] = value;
+      }
+    }
+    
+    normalized.ai_confidence = aiResult.confidence || {};
+    normalized.ai_enhanced = true;
+    
+    return normalized;
+  } catch (error) {
+    console.log('AI normalization failed:', error.message);
+    return { ...data, ai_confidence: {}, ai_enhanced: false };
+  }
+}
+
+// AI-powered compliance explanation generator
+async function generateComplianceExplanation(violations, productData) {
+  if (!openai || !process.env.OPENAI_API_KEY || violations.length === 0) {
+    return null;
+  }
+
+  try {
+    const prompt = `Generate clear, helpful explanations for Legal Metrology compliance violations. Make it easy to understand and actionable.
+
+Product: ${productData.product_name || 'Unknown Product'}
+Violations: ${violations.join(', ')}
+
+For each violation, explain:
+1. What's missing/wrong
+2. Why it's required by Indian Legal Metrology rules
+3. How to fix it (specific steps)
+
+Keep explanations under 120 words total. Be helpful, not technical. Return JSON format:
+{
+  "explanation": "Clear explanation of what's wrong and how to fix",
+  "severity": "low|medium|high",
+  "confidence": 0.9
+}`;
+
+    const response = await openai.chat.completions.create({
+      model: "gpt-5",
+      messages: [{ role: "user", content: prompt }],
+      response_format: { type: "json_object" },
+      temperature: 0.4
+    });
+
+    return JSON.parse(response.choices[0].message.content);
+  } catch (error) {
+    console.log('AI explanation failed:', error.message);
+    return null;
+  }
 }
 
 // Enhanced generic extraction functions
@@ -479,35 +583,33 @@ async function scrapeProduct(url) {
                    
   } else if (isAmazon) {
     // Amazon-specific selectors
-    product_name = product_name || ($('#productTitle').text() ||
+    product_name = ($('#productTitle').text() ||
                    $('h1[data-automation-id="product-title"]').text() ||
                    $('h1').first().text()).trim() || null;
-
-    const priceWhole = $('.a-price-whole').first().text().replace(/\.$/, '');
-    const priceFraction = $('.a-price-fraction').first().text();
-    price = price || ($('.a-price .a-offscreen').first().text() ||
-            (priceWhole && (priceFraction ? `${priceWhole}.${priceFraction}` : priceWhole)) ||
+    
+    price = ($('.a-price .a-offscreen').first().text() ||
+            $('.a-price-whole').first().text() + '.' + $('.a-price-fraction').first().text() ||
             $('.a-price-range .a-price .a-offscreen').first().text() ||
             $('[class*="price"]').first().text()).trim() || null;
-
+    
     // Extract manufacturer from various Amazon-specific locations
-    manufacturer = manufacturer || ($('[data-feature-name="bylineInfo"] a').text() ||
+    manufacturer = ($('[data-feature-name="bylineInfo"] a').text() ||
                    $('.author .contributorNameID').text() ||
-                   $('a[data-asin]:contains("Store")').text().replace(/Visit the|Store/g, '').trim() ||
+                   'a[data-asin]:contains("Store")'.text().replace(/Visit the|Store/g, '').trim() ||
                    $('.po-brand .po-break-word').text() ||
                    $('#bylineInfo_feature_div a').text() ||
                    $('tr:contains("Brand") td').text() ||
                    $('th:contains("Brand")').next().text()).trim() || null;
-
+    
     // Extract quantity/weight from product details (Amazon-specific)
-    net_quantity = net_quantity || ($('tr:contains("Item Weight") td:last').text() ||
+    net_quantity = ($('tr:contains("Item Weight") td:last').text() ||
                    $('tr:contains("Package Weight") td:last').text() ||
                    $('tr:contains("Net Quantity") td:last').text() ||
                    $('.po-item_weight .po-break-word').text() ||
                    $('span:contains("g"), span:contains("kg"), span:contains("ml"), span:contains("l")').first().text()).trim() || null;
-
+    
     // Extract country from product details
-    country_of_origin = country_of_origin || ($('tr:contains("Country of Origin") td').text() ||
+    country_of_origin = ($('tr:contains("Country of Origin") td').text() ||
                         $('tr:contains("Made in") td').text() ||
                         $('.a-size-base:contains("Country")').parent().text()).trim() || null;
   } else {
@@ -593,8 +695,46 @@ app.post('/api/check',
         parsed = await processLabelImage(imageFile.path);
       }
 
-      // Required fields and scoring live in schema.js (createNormalizedLabel)
+      // Rule engine with different requirements for URL vs Image processing
       const isImageSource = parsed._ocr_source === 'image';
+      
+      // All 6 mandatory Legal Metrology fields for images, basic fields for URLs
+      const requiredForImages = [
+        'product_name',
+        'MRP', 
+        'manufacturer',
+        'net_quantity',
+        'country_of_origin',
+        'consumer_care',
+        'date_of_manufacture'
+      ];
+      
+      const requiredForUrls = [
+        'product_name',
+        'MRP', 
+        'manufacturer',
+        'net_quantity',
+        'country_of_origin'
+      ];
+      
+      const required = isImageSource ? requiredForImages : requiredForUrls;
+      const violations = [];
+      
+      const fieldNames = {
+        'product_name': 'Product Name',
+        'MRP': 'MRP (Retail Sale Price)',
+        'manufacturer': 'Manufacturer/Packer/Importer Name & Address',
+        'net_quantity': 'Net Quantity',
+        'country_of_origin': 'Country of Origin',
+        'consumer_care': 'Consumer Care Details',
+        'date_of_manufacture': 'Date of Manufacture/Import'
+      };
+      
+      required.forEach(k => { 
+        if (!parsed[k] || (typeof parsed[k] === 'string' && parsed[k].trim() === '')) {
+          violations.push(`${fieldNames[k]} missing`);
+        }
+      });
 
       const reasons = [];
       if (parsed._ocr_confidence && parsed._ocr_confidence < 0.6) {
@@ -643,9 +783,6 @@ app.post('/api/check',
         compliance_score: normalizedLabel.compliance_score,
         status: normalizedLabel.status,
         violations: normalizedLabel.violations.map(v => v.message),
-        unverifiable: normalizedLabel.unverifiable_fields.map(u => u.message),
-        issues: normalizedLabel.violations, // { field, type, severity, message }
-        unverifiable_fields: normalizedLabel.unverifiable_fields, // { field, message }
         reasons: reasons, // Keep quality reasons separate
         timestamp: normalizedLabel._timestamp,
         // Include full normalized data for future use
@@ -867,7 +1004,7 @@ app.get('/health', (req, res) => {
 });
 
 // 404 handler
-app.use((req, res) => {
+app.use('*', (req, res) => {
   res.status(404).json({ error: 'Endpoint not found' });
 });
 
@@ -887,15 +1024,8 @@ app.use((err, req, res, next) => {
 });
 
 const PORT = process.env.PORT || 8000;
-initializeDatabase()
-  .then(() => {
-    app.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`Security headers enabled: ${process.env.NODE_ENV === 'production' ? 'Yes' : 'Development mode'}`);
-    });
-  })
-  .catch((err) => {
-    console.error('Failed to initialize database, exiting:', err);
-    process.exit(1);
-  });
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
+  console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`Security headers enabled: ${process.env.NODE_ENV === 'production' ? 'Yes' : 'Development mode'}`);
+});

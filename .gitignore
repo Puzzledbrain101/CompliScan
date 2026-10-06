@@ -64,11 +64,3 @@ Thumbs.db
 
 # Backend specific
 uploads/
-# Replit agent state
-.local/
-
-# Local SQLite database (created at startup)
-backend/data/
-
-# Archives
-*.zip
